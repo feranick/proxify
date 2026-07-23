@@ -387,24 +387,48 @@ def make_filename(orig_url: str, index: int) -> str:
     return base
 
 
-def filename_from_title(title: str, year: str, max_len: int = 150) -> str:
-    """Build a space-free, ASCII-safe base filename (no extension) from the
-    paper title and year, e.g. 'Flash_sintering_of_ceramics_2019'.
-
-    Accents/unicode are folded to ASCII; spaces become underscores; anything
-    unsafe for a filename is dropped. Returns "" if there is no usable title.
-    """
-    t = unicodedata.normalize("NFKD", title or "")
-    t = t.encode("ascii", "ignore").decode("ascii")   # drop accents & unicode
+def _slug(text: str) -> str:
+    """ASCII-fold, replace whitespace with '_', drop unsafe chars, collapse '_'."""
+    t = unicodedata.normalize("NFKD", text or "")
+    t = t.encode("ascii", "ignore").decode("ascii")    # drop accents & unicode
     t = re.sub(r"\s+", "_", t.strip())
     t = re.sub(r"[^A-Za-z0-9._-]", "", t)              # keep filename-safe chars
-    t = re.sub(r"_+", "_", t).strip("_.")
+    return re.sub(r"_+", "_", t).strip("_.")
+
+
+def first_author_lastname(authors: str) -> str:
+    """Surname of the first author from an 'authors' field.
+
+    Authors are separated by ';' (or ',' if no ';'); each is given-name-first
+    (e.g. 'Eugene A. Olevsky'), so the surname is the last whitespace token of
+    the first entry. Returns "" if empty.
+    """
+    if not authors:
+        return ""
+    sep = ";" if ";" in authors else ","
+    first = authors.split(sep)[0]
+    toks = first.replace(",", " ").split()
+    return toks[-1] if toks else ""
+
+
+def filename_from_meta(authors: str, title: str, year: str, max_len: int = 150) -> str:
+    """Build a space-free, ASCII-safe base filename (no extension) as
+    '<FirstAuthorSurname>_<Title>_<Year>', e.g.
+    'Olevsky_Flash_Sintering_2018'. Missing parts are simply omitted.
+    """
+    surname = first_author_lastname(authors)
+    base = _slug(" ".join(p for p in (surname, title) if p))
     y = re.sub(r"[^0-9]", "", str(year or ""))
-    if t and y:
-        t = f"{t}_{y}"
+    if base and y:
+        base = f"{base}_{y}"
     elif y:
-        t = y
-    return t[:max_len].strip("_.")
+        base = y
+    return base[:max_len].strip("_.")
+
+
+def filename_from_title(title: str, year: str, max_len: int = 150) -> str:
+    """Title+year filename (no author). Kept for callers without author data."""
+    return filename_from_meta("", title, year, max_len)
 
 
 def download(records, outdir: str, cookies, htmldir: str, abstractdir: str):
@@ -421,33 +445,35 @@ def download(records, outdir: str, cookies, htmldir: str, abstractdir: str):
     os.makedirs(outdir, exist_ok=True)
 
     ok = ok_warn = notpdf = fail = abstracts = 0
-    failures = []       # (original_doi, title, year, proxied_url, reason)
-    needs_browser = []  # (original_doi, title, year, proxied_url, reason)
-    used_names = set()  # for de-duplicating title-based filenames
+    failures = []       # (original_doi, filename, title, year, proxied_url, reason)
+    needs_browser = []  # (original_doi, filename, title, year, proxied_url, reason)
+    used_names = set()  # for de-duplicating filenames
     total = len(records)
     for i, rec in enumerate(records, start=1):
         orig, proxied, gated = rec["orig"], rec["proxied"], rec["gated"]
         title, year = rec.get("title", ""), rec.get("year", "")
 
+        # Compute the filename once (for every row, gated included) so the
+        # browser step can reuse the exact same name via the report CSV.
+        base = rec.get("name")
+        if not base:
+            fn = make_filename(orig, i)
+            base = fn[:-4] if fn.lower().endswith(".pdf") else fn
+        stem, k = base, 2
+        while stem.lower() in used_names:   # avoid clobbering same-name papers
+            stem = f"{base}_{k}"
+            k += 1
+        used_names.add(stem.lower())
+
         if gated:
-            needs_browser.append((orig, title, year, proxied,
+            needs_browser.append((orig, stem, title, year, proxied,
                                   "JS/bot-gated publisher — needs a browser"))
             print(f"[{i}/{total}] {proxied}\n"
                   f"        SKIP: JS/bot-gated publisher (curl cannot fetch PDF) "
                   f"— added to needs-browser list.")
             continue
 
-        # Prefer a title+year filename; fall back to a URL-derived one.
-        base = rec.get("name")
-        if not base:
-            fn = make_filename(orig, i)
-            base = fn[:-4] if fn.lower().endswith(".pdf") else fn
-        cand, k = base, 2
-        while cand.lower() in used_names:   # avoid clobbering same-title papers
-            cand = f"{base}_{k}"
-            k += 1
-        used_names.add(cand.lower())
-        fname = cand + ".pdf"
+        fname = stem + ".pdf"
         dest = os.path.join(outdir, fname)
         cmd = [
             "curl", "-L",
@@ -479,7 +505,6 @@ def download(records, outdir: str, cookies, htmldir: str, abstractdir: str):
                       f"— file is intact).")
         elif file_ok and not is_pdf(dest):
             notpdf += 1
-            stem = fname[:-4] if fname.lower().endswith(".pdf") else fname
             # Move the landing page out of the PDF folder into htmldir.
             os.makedirs(htmldir, exist_ok=True)
             html_dest = os.path.join(htmldir, stem + ".html")
@@ -503,13 +528,13 @@ def download(records, outdir: str, cookies, htmldir: str, abstractdir: str):
                     abs_note = f"abstract -> {os.path.basename(abs_dest)}"
                 except OSError:
                     abs_note = "abstract found but could not be written"
-            failures.append((orig, title, year, proxied, f"{reason}; {abs_note}"))
+            failures.append((orig, stem, title, year, proxied, f"{reason}; {abs_note}"))
             note = "" if rc == 0 else f" (curl exit {rc})"
             print(f"        WARNING: not a PDF{note} — HTML landing page moved to "
                   f"{htmldir}/{os.path.basename(saved_as)}; {abs_note}.")
         else:
             fail += 1
-            failures.append((orig, title, year, proxied, f"download failed (curl exit {rc})"))
+            failures.append((orig, stem, title, year, proxied, f"download failed (curl exit {rc})"))
             if os.path.exists(dest) and os.path.getsize(dest) == 0:
                 try:
                     os.remove(dest)
@@ -545,10 +570,10 @@ def _default_sidecar(infile: str, suffix: str, ext: str | None = None) -> str:
 
 
 def write_report_csv(path: str, rows) -> None:
-    """rows: iterable of (original_doi, title, year, proxied_url, reason)."""
+    """rows: iterable of (original_doi, filename, title, year, proxied_url, reason)."""
     with open(path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["original_doi", "title", "year", "proxied_url", "reason"])
+        w.writerow(["original_doi", "filename", "title", "year", "proxied_url", "reason"])
         w.writerows(rows)
 
 
@@ -578,9 +603,10 @@ def load_csv_items(path: str):
     for r in rows:
         g = lambda k: (r.get(k) or "").strip()
         doi = g("doi") or g("original_doi")
-        title, year = g("title"), g("year")
+        title, year, authors = g("title"), g("year"), g("authors")
         pdf_url, landing = g("pdf_url"), g("landing_url")
         doi_url, proxied_url = g("doi_url"), g("proxied_url")
+        precomputed_name = g("filename")      # present when re-running a report CSV
         access = g("access_class").lower()
         is_oa = (g("unpaywall_is_oa").lower() == "true"
                  or access in {"open_pdf", "oa_landing_only"})
@@ -601,6 +627,7 @@ def load_csv_items(path: str):
 
         items.append({
             "id": doi or doi_url or src, "title": title, "year": year,
+            "authors": authors, "name": precomputed_name,
             "src": src, "is_oa": is_oa, "has_direct_pdf": has_direct_pdf,
             "already_proxied": already_proxied,
         })

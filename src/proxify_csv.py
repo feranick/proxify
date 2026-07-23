@@ -101,10 +101,13 @@ def build_records(items, args, resolved):
     records = []
     for it in items:
         url, gated = transform(it)
+        # <FirstAuthorSurname>_<Title>_<Year>; reuse a precomputed name if the
+        # input was one of our report CSVs.
+        name = it.get("name") or pm.filename_from_meta(
+            it.get("authors", ""), it["title"], it["year"]) or None
         records.append({
             "orig": it["id"], "proxied": url, "gated": gated,
-            "title": it["title"], "year": it["year"],
-            "name": pm.filename_from_title(it["title"], it["year"]) or None,
+            "title": it["title"], "year": it["year"], "name": name,
         })
     return records
 

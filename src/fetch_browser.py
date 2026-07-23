@@ -122,6 +122,7 @@ def read_targets(path: str):
                         "url": url,
                         "title": (r.get("title") or "").strip(),
                         "year": (r.get("year") or "").strip(),
+                        "name": (r.get("filename") or "").strip(),
                     })
         return rows
     # plain list
@@ -132,7 +133,7 @@ def read_targets(path: str):
             if not s or s.startswith("#"):
                 continue
             url = s.split()[0].split("\t")[0]
-            targets.append({"original": url, "url": url, "title": "", "year": ""})
+            targets.append({"original": url, "url": url, "title": "", "year": "", "name": ""})
     return targets
 
 
@@ -319,7 +320,10 @@ def run(targets, cookies_path, outdir, htmldir, abstractdir,
         for i, t in enumerate(targets, start=1):
             original, url = t["original"], t["url"]
             print(f"[{i}/{total}] {url}")
-            stem = pm.filename_from_title(t.get("title", ""), t.get("year", "")) \
+            # Reuse the exact filename proxify computed (from the report CSV);
+            # else derive from title+year; else from the URL.
+            stem = t.get("name") \
+                or pm.filename_from_title(t.get("title", ""), t.get("year", "")) \
                 or safe_name(original, url, i)
             base, k = stem, 2
             while stem.lower() in used_names:   # avoid clobbering same-title papers

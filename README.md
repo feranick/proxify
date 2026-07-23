@@ -6,7 +6,7 @@ cookies. Three scripts, sharing one core:
 | Script | Use when your input is… | Notes |
 |--------|-------------------------|-------|
 | **`proxify.py`** | a **.txt** list of URLs or DOIs (one per line) | The original workflow; resolves DOIs, proxies, downloads with `curl`. |
-| **`proxify_csv.py`** | a **metadata CSV** (one paper per row, with `pdf_url`/`landing_url`/`title`/…) | Faster: uses the columns to skip resolution, fetch open-access PDFs directly, and name files by title+year. |
+| **`proxify_csv.py`** | a **metadata CSV** (one paper per row, with `pdf_url`/`landing_url`/`title`/`authors`/…) | Faster: uses the columns to skip resolution, fetch open-access PDFs directly, and name files by author+title+year. |
 | **`fetch_browser.py`** | the `needs_browser.csv` either produces | Headless browser for JS/bot-gated publishers `curl` can't crack. |
 
 All output for a given input goes into **one folder named after that input**
@@ -15,7 +15,7 @@ All output for a given input goes into **one folder named after that input**
 
 ```
 access_all_papers/
-  downloads/          real PDFs (named <Title>_<Year>.pdf)
+  downloads/          real PDFs (named <Surname>_<Title>_<Year>.pdf)
   landing_pages/      HTML when no PDF was obtainable
   abstract_failed/    abstracts extracted from those pages
   proxied.txt         the rewritten URL list
@@ -213,13 +213,14 @@ and the source URL for traceability.
 
 Any link that did **not** produce a valid PDF — both hard failures and non-PDF
 landing pages — is written to a CSV (default `<outroot>/failed.csv`, override
-with `-f`) with columns `original_doi`, `title`, `year`, `proxied_url`,
-`reason` (`title`/`year` are blank for plain-text input, populated from a CSV):
+with `-f`) with columns `original_doi`, `filename`, `title`, `year`,
+`proxied_url`, `reason`. The `filename` column is the exact base name the paper
+would use, so `fetch_browser.py` names its downloads identically:
 
 ```csv
-original_doi,title,year,proxied_url,reason
-10.1111/jace.15314,Continuous flash sintering,2017,https://ceramics-onlinelibrary-wiley-com.libproxy.example.edu/doi/pdf/10.1111/jace.15314,not-a-PDF (HTML landing/viewer page); abstract -> Continuous_flash_sintering_2017.txt
-10.2139/ssrn.3630430,,,https://www-ssrn-com.libproxy.example.edu/abstract=3630430,download failed (curl exit 22)
+original_doi,filename,title,year,proxied_url,reason
+10.1111/jace.15314,Sortino_Continuous_flash_sintering_2017,Continuous flash sintering,2017,https://ceramics-onlinelibrary-wiley-com.libproxy.example.edu/doi/pdf/10.1111/jace.15314,not-a-PDF (HTML landing/viewer page); abstract -> Sortino_Continuous_flash_sintering_2017.txt
+10.2139/ssrn.3630430,Doe_Some_working_paper_2023,Some working paper,2023,https://www-ssrn-com.libproxy.example.edu/abstract=3630430,download failed (curl exit 22)
 ```
 
 `proxied_url` is the exact URL `curl` attempted (after resolution and PDF
@@ -379,8 +380,10 @@ uses the CSV columns to work smarter and faster.
   access (`unpaywall_is_oa` true, or `access_class` of `open_pdf` /
   `oa_landing_only`) *and* have a direct `pdf_url` are downloaded straight from
   the publisher — the proxy is only used for closed / `needs_library` rows.
-- **Names files by title + year**, e.g. `Flash_sintering_of_ceramics_2019.pdf`
-  (spaces removed, accents folded to ASCII; duplicate title+year gets `_2`).
+- **Names files by first-author surname + title + year**, e.g.
+  `Biesuz_Flash_sintering_of_ceramics_2019.pdf` (the surname is the last token
+  of the first `authors` entry; spaces removed, accents folded to ASCII;
+  duplicate names get `_2`).
 
 ## Expected columns
 
@@ -388,9 +391,12 @@ A header row is required. These columns are used; extras are ignored and missing
 ones are tolerated:
 
 ```
-doi, title, year, unpaywall_is_oa, oa_status, pdf_url, landing_url,
+doi, title, authors, year, unpaywall_is_oa, oa_status, pdf_url, landing_url,
 doi_url, access_class
 ```
+
+`authors` is used for the filename (first entry's surname); `title`/`year`
+complete the name.
 
 Per row, the URL to fetch is chosen in this order: `pdf_url` → `landing_url` →
 `doi_url` → `https://doi.org/<doi>`. A row with only a DOI is resolved when `-r`
