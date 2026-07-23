@@ -528,6 +528,14 @@ def download(records, outdir: str, cookies, htmldir: str, abstractdir: str):
     return failures, needs_browser
 
 
+def output_root(infile: str) -> str:
+    """Folder that holds all output for an input file: the path with its
+    extension stripped (keeping any directory). e.g. 'data/list.csv' ->
+    'data/list', 'papers.txt' -> 'papers'."""
+    root, _ = os.path.splitext(infile)
+    return root or infile
+
+
 def _default_sidecar(infile: str, suffix: str, ext: str | None = None) -> str:
     """<infile>_<suffix>.<ext>. If ext is None, keep the infile's extension."""
     if "." in infile:
@@ -612,30 +620,30 @@ def main() -> None:
                     help="percent-encode the original URL in login mode")
     ap.add_argument("-d", "--download", action="store_true",
                     help="download each proxied link with curl")
-    ap.add_argument("-o", "--outdir", default="downloads",
-                    help="directory for real PDFs only (default: downloads)")
-    ap.add_argument("--htmldir", default="landing_pages",
-                    help="directory for HTML landing/viewer pages (default: landing_pages)")
-    ap.add_argument("--abstractdir", default="abstract_failed",
-                    help="directory for abstracts extracted from landing pages "
-                         "(default: abstract_failed)")
+    ap.add_argument("--outroot", default=None,
+                    help="parent folder for all output (default: the input filename "
+                         "without its extension). Everything below goes inside it.")
+    ap.add_argument("-o", "--outdir", default=None,
+                    help="directory for real PDFs only (default: <outroot>/downloads)")
+    ap.add_argument("--htmldir", default=None,
+                    help="directory for HTML landing/viewer pages (default: <outroot>/landing_pages)")
+    ap.add_argument("--abstractdir", default=None,
+                    help="directory for abstracts (default: <outroot>/abstract_failed)")
     ap.add_argument("-c", "--cookies", default=None,
                     help="Netscape cookie.txt file for proxy authentication (used with -d)")
     ap.add_argument("-g", "--pdf-guess", action="store_true",
                     help="rewrite known publisher landing/viewer URLs to direct-PDF URLs "
                          "(ACS, Science, Wiley, T&F, SAGE, Springer, Nature, MDPI, IOP, J-Stage)")
     ap.add_argument("-f", "--failfile", default=None,
-                    help="CSV for links that did not yield a PDF "
-                         "(columns: original_doi,proxied_url,reason; default: <infile>_failed.csv)")
+                    help="CSV for links that did not yield a PDF (default: <outroot>/failed.csv)")
     ap.add_argument("-b", "--browserfile", default=None,
-                    help="CSV for links that need a browser "
-                         "(columns: original_doi,proxied_url,reason; default: <infile>_needs_browser.csv)")
+                    help="CSV for links that need a browser (default: <outroot>/needs_browser.csv)")
     ap.add_argument("-r", "--resolve-doi", action="store_true",
                     help="resolve doi.org links (and bare DOIs) to the final publisher URL first")
     ap.add_argument("-j", "--jobs", type=int, default=8,
                     help="parallel workers for DOI resolution (default: 8)")
     ap.add_argument("-u", "--unresolved-file", default=None,
-                    help="file for DOIs that fail to resolve (default: <infile>_unresolved.<ext>)")
+                    help="file for DOIs that fail to resolve (default: <outroot>/unresolved.txt)")
     ap.add_argument("--no-arxiv-oa", action="store_true",
                     help="do NOT bypass the proxy for arXiv (arXiv is open access; bypass is default)")
     args = ap.parse_args()
@@ -645,7 +653,13 @@ def main() -> None:
               "Set LIBPROXY_HOST or pass --proxy-host for working links.")
 
     infile = args.infile
-    outfile = args.outfile or _default_sidecar(infile, "proxied")
+    # Everything for this input lives inside one folder named after it.
+    root = args.outroot or output_root(infile)
+    os.makedirs(root, exist_ok=True)
+    outfile = args.outfile or os.path.join(root, "proxied.txt")
+    outdir = args.outdir or os.path.join(root, "downloads")
+    htmldir = args.htmldir or os.path.join(root, "landing_pages")
+    abstractdir = args.abstractdir or os.path.join(root, "abstract_failed")
 
     with open(infile, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -696,7 +710,7 @@ def main() -> None:
               f"({len(unresolved)} could not be resolved).")
 
         if unresolved:
-            unres_file = args.unresolved_file or _default_sidecar(infile, "unresolved")
+            unres_file = args.unresolved_file or os.path.join(root, "unresolved.txt")
             with open(unres_file, "w", encoding="utf-8") as f:
                 f.write("# DOIs that could not be resolved to a publisher URL\n")
                 f.write("# (dead DOI, or the resolver was blocked/offline).\n")
@@ -748,15 +762,15 @@ def main() -> None:
             print("Note: login mode without -c/--cookies will just fetch the login page.")
 
         failures, needs_browser = download(
-            records, args.outdir, args.cookies, args.htmldir, args.abstractdir)
+            records, outdir, args.cookies, htmldir, abstractdir)
 
         if failures:
-            failfile = args.failfile or _default_sidecar(infile, "failed", "csv")
+            failfile = args.failfile or os.path.join(root, "failed.csv")
             write_report_csv(failfile, failures)
             print(f"Wrote {len(failures)} failed link(s) to {failfile}")
 
         if needs_browser:
-            browserfile = args.browserfile or _default_sidecar(infile, "needs_browser", "csv")
+            browserfile = args.browserfile or os.path.join(root, "needs_browser.csv")
             write_report_csv(browserfile, needs_browser)
             print(f"Wrote {len(needs_browser)} browser-required link(s) to {browserfile}")
 

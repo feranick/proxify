@@ -31,15 +31,16 @@ Usage:
 """
 
 import argparse
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlsplit
 
 import proxify as pm
 
 
-def _resolve(items, jobs, infile, unresolved_file):
+def _resolve(items, jobs, unresolved_file):
     """Resolve doi-like sources in `items` to publisher URLs. Returns a map
-    {src -> resolved} and writes an unresolved-DOI file if any fail."""
+    {src -> resolved} and writes an unresolved-DOI file (unresolved_file) if any fail."""
     doi_srcs = sorted({it["src"] for it in items if pm.is_doi_like(it["src"])})
     resolved = {}
     if not doi_srcs:
@@ -68,12 +69,11 @@ def _resolve(items, jobs, infile, unresolved_file):
     print(f"Resolved {total - len(unresolved)}/{total} DOI(s) to a publisher URL "
           f"({len(unresolved)} could not be resolved).")
     if unresolved:
-        uf = unresolved_file or pm._default_sidecar(infile, "unresolved", "txt")
-        with open(uf, "w", encoding="utf-8") as f:
+        with open(unresolved_file, "w", encoding="utf-8") as f:
             f.write("# DOIs that could not be resolved to a publisher URL\n")
             for s in unresolved:
                 f.write(s + "\n")
-        print(f"Wrote {len(unresolved)} unresolved DOI(s) to {uf}")
+        print(f"Wrote {len(unresolved)} unresolved DOI(s) to {unresolved_file}")
     return resolved
 
 
@@ -114,31 +114,33 @@ def main():
         description="Download papers listed in a metadata CSV via a library proxy.")
     ap.add_argument("infile", help="metadata CSV (doi/title/year/pdf_url/landing_url/...)")
     ap.add_argument("outfile", nargs="?", default=None,
-                    help="URL list output (default: <infile>_proxied.txt)")
+                    help="URL list output (default: <outroot>/proxied.txt)")
     ap.add_argument("--proxy-host", default=None,
                     help="your EZproxy host (overrides LIBPROXY_HOST), e.g. libproxy.example.edu")
+    ap.add_argument("--outroot", default=None,
+                    help="parent folder for all output (default: the CSV name without .csv)")
     ap.add_argument("-m", "--mode", choices=["host", "login"], default="host",
                     help="proxy style (default: host)")
     ap.add_argument("-d", "--download", action="store_true", help="download with curl")
-    ap.add_argument("-o", "--outdir", default="downloads", help="PDF dir (default: downloads)")
-    ap.add_argument("--htmldir", default="landing_pages",
-                    help="HTML landing-page dir (default: landing_pages)")
-    ap.add_argument("--abstractdir", default="abstract_failed",
-                    help="abstract dir (default: abstract_failed)")
+    ap.add_argument("-o", "--outdir", default=None, help="PDF dir (default: <outroot>/downloads)")
+    ap.add_argument("--htmldir", default=None,
+                    help="HTML landing-page dir (default: <outroot>/landing_pages)")
+    ap.add_argument("--abstractdir", default=None,
+                    help="abstract dir (default: <outroot>/abstract_failed)")
     ap.add_argument("-c", "--cookies", default=None,
                     help="Netscape cookies.txt for proxy authentication")
     ap.add_argument("-g", "--pdf-guess", action="store_true",
                     help="rewrite landing/viewer URLs to direct-PDF URLs")
     ap.add_argument("-f", "--failfile", default=None,
-                    help="failed-links CSV (default: <infile>_failed.csv)")
+                    help="failed-links CSV (default: <outroot>/failed.csv)")
     ap.add_argument("-b", "--browserfile", default=None,
-                    help="needs-browser CSV (default: <infile>_needs_browser.csv)")
+                    help="needs-browser CSV (default: <outroot>/needs_browser.csv)")
     ap.add_argument("-r", "--resolve-doi", action="store_true",
                     help="resolve DOIs for rows that have only a DOI (no pdf/landing URL)")
     ap.add_argument("-j", "--jobs", type=int, default=8,
                     help="parallel workers for DOI resolution (default: 8)")
     ap.add_argument("-u", "--unresolved-file", default=None,
-                    help="unresolved-DOI file (default: <infile>_unresolved.txt)")
+                    help="unresolved-DOI file (default: <outroot>/unresolved.txt)")
     ap.add_argument("--no-arxiv-oa", action="store_true",
                     help="do NOT bypass the proxy for arXiv (default: bypass)")
     args = ap.parse_args()
@@ -158,12 +160,19 @@ def main():
           f"{n_doi_only} row(s) are DOI-only"
           + (" (use -r to resolve them)." if n_doi_only and not args.resolve_doi else "."))
 
-    resolved = _resolve(items, args.jobs, args.infile, args.unresolved_file) \
-        if args.resolve_doi else {}
+    # Everything for this CSV lives inside one folder named after it.
+    root = args.outroot or pm.output_root(args.infile)
+    os.makedirs(root, exist_ok=True)
+    outfile = args.outfile or os.path.join(root, "proxied.txt")
+    outdir = args.outdir or os.path.join(root, "downloads")
+    htmldir = args.htmldir or os.path.join(root, "landing_pages")
+    abstractdir = args.abstractdir or os.path.join(root, "abstract_failed")
+    unres_file = args.unresolved_file or os.path.join(root, "unresolved.txt")
+
+    resolved = _resolve(items, args.jobs, unres_file) if args.resolve_doi else {}
 
     records = build_records(items, args, resolved)
 
-    outfile = args.outfile or pm._default_sidecar(args.infile, "proxied", "txt")
     with open(outfile, "w", encoding="utf-8") as f:
         for rec in records:
             f.write(rec["proxied"] + "\n")
@@ -175,14 +184,14 @@ def main():
         print("Note: login mode without -c/--cookies will just fetch the login page.")
 
     failures, needs_browser = pm.download(
-        records, args.outdir, args.cookies, args.htmldir, args.abstractdir)
+        records, outdir, args.cookies, htmldir, abstractdir)
 
     if failures:
-        ff = args.failfile or pm._default_sidecar(args.infile, "failed", "csv")
+        ff = args.failfile or os.path.join(root, "failed.csv")
         pm.write_report_csv(ff, failures)
         print(f"Wrote {len(failures)} failed link(s) to {ff}")
     if needs_browser:
-        bf = args.browserfile or pm._default_sidecar(args.infile, "needs_browser", "csv")
+        bf = args.browserfile or os.path.join(root, "needs_browser.csv")
         pm.write_report_csv(bf, needs_browser)
         print(f"Wrote {len(needs_browser)} browser-required link(s) to {bf}")
     if not failures and not needs_browser:

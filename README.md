@@ -9,10 +9,25 @@ cookies. Three scripts, sharing one core:
 | **`proxify_csv.py`** | a **metadata CSV** (one paper per row, with `pdf_url`/`landing_url`/`title`/…) | Faster: uses the columns to skip resolution, fetch open-access PDFs directly, and name files by title+year. |
 | **`fetch_browser.py`** | the `needs_browser.csv` either produces | Headless browser for JS/bot-gated publishers `curl` can't crack. |
 
-All three write into the **same three folders** and produce compatible sidecar
-CSVs, so you can chain them. Pick `proxify.py` **or** `proxify_csv.py`
-depending on your input, then run `fetch_browser.py` on whatever gets routed to
-the browser. See [proxify_csv.py](#csv-input-proxify_csvpy) and
+All output for a given input goes into **one folder named after that input**
+(the filename without its extension), so different input files never mix. For
+`access_all_papers.csv`:
+
+```
+access_all_papers/
+  downloads/          real PDFs (named <Title>_<Year>.pdf)
+  landing_pages/      HTML when no PDF was obtainable
+  abstract_failed/    abstracts extracted from those pages
+  proxied.txt         the rewritten URL list
+  failed.csv          links that didn't yield a PDF
+  needs_browser.csv   JS/bot-gated links for the browser step
+```
+
+The three scripts share this layout, so you can chain them: pick `proxify.py`
+**or** `proxify_csv.py` for your input, then run `fetch_browser.py` on the
+`needs_browser.csv` inside that folder — its PDFs land in the same `downloads/`.
+Override the parent folder with `--outroot`. See
+[proxify_csv.py](#csv-input-proxify_csvpy) and
 [Fetching gated PDFs with a browser](#fetching-gated-pdfs-with-a-browser-fetch_browserpy).
 
 ---
@@ -25,11 +40,12 @@ optionally download the PDFs with `curl`.
 ## What it does
 
 Given a text file with one URL (or DOI) per line, the script rewrites each URL
-so it routes through `libproxy.example.edu`, writing the results to a new text file.
-It supports two proxy styles and can also fetch each link. Downloads are sorted
-into three folders:
+so it routes through your proxy host, writing everything into a folder named
+after the input file (see the layout shown at the top). It supports
+two proxy styles and can also fetch each link, sorting downloads into three
+sub-folders:
 
-| Folder | Contents |
+| Sub-folder | Contents |
 |--------|----------|
 | `downloads/` | Real PDFs only (verified by the `%PDF` magic bytes) |
 | `landing_pages/` | HTML landing/viewer pages when no PDF could be obtained |
@@ -105,27 +121,28 @@ https://libproxy.example.edu/login?url=https%3A%2F%2Fpubs.acs.org%2Fdoi%2F10.102
 | Flag | Description |
 |------|-------------|
 | `infile` | Input file, one URL/DOI per line (default: `urls.txt`) |
-| `outfile` | Output file (default: `<infile>_proxied.<ext>`) |
+| `outfile` | Output file (default: `<outroot>/proxied.txt`) |
 | `-m`, `--mode` | Proxy style: `host` (default) or `login` |
 | `-e`, `--encode` | Percent-encode the original URL in `login` mode |
 | `-d`, `--download` | Download each proxied link with `curl` |
-| `-o`, `--outdir` | Folder for **real PDFs only** (default: `downloads`) |
-| `--htmldir` | Folder for HTML landing pages (default: `landing_pages`) |
-| `--abstractdir` | Folder for extracted abstracts (default: `abstract_failed`) |
+| `--outroot` | Parent folder for all output (default: input filename without extension) |
+| `-o`, `--outdir` | Folder for **real PDFs only** (default: `<outroot>/downloads`) |
+| `--htmldir` | Folder for HTML landing pages (default: `<outroot>/landing_pages`) |
+| `--abstractdir` | Folder for extracted abstracts (default: `<outroot>/abstract_failed`) |
 | `-c`, `--cookies` | Netscape `cookies.txt` file for proxy authentication (with `-d`) |
 | `-g`, `--pdf-guess` | Rewrite known landing/viewer URLs to direct-PDF URLs before proxying |
-| `-f`, `--failfile` | CSV for links that didn't yield a PDF (default: `<infile>_failed.csv`) |
-| `-b`, `--browserfile` | CSV for JS/bot-gated links needing the browser (default: `<infile>_needs_browser.csv`) |
+| `-f`, `--failfile` | CSV for links that didn't yield a PDF (default: `<outroot>/failed.csv`) |
+| `-b`, `--browserfile` | CSV for JS/bot-gated links needing the browser (default: `<outroot>/needs_browser.csv`) |
 | `-r`, `--resolve-doi` | Resolve `doi.org` links / bare DOIs to the publisher URL before proxying |
 | `-j`, `--jobs` | Parallel workers for DOI resolution (default: 8) |
-| `-u`, `--unresolved-file` | File for DOIs that fail to resolve (default: `<infile>_unresolved.<ext>`) |
+| `-u`, `--unresolved-file` | File for DOIs that fail to resolve (default: `<outroot>/unresolved.txt`) |
 | `--no-arxiv-oa` | Do **not** bypass the proxy for arXiv (default: fetch arXiv open-access, direct) |
 | `-h`, `--help` | Show help |
 
 ## Usage
 
 ```bash
-# Host rewrite (default) -> urls_proxied.txt
+# Host rewrite (default) -> urls/proxied.txt
 python3 proxify.py urls.txt
 
 # Explicit output file
@@ -195,7 +212,7 @@ and the source URL for traceability.
 ### Failed-links file (CSV)
 
 Any link that did **not** produce a valid PDF — both hard failures and non-PDF
-landing pages — is written to a CSV (default `<infile>_failed.csv`, override
+landing pages — is written to a CSV (default `<outroot>/failed.csv`, override
 with `-f`) with columns `original_doi`, `title`, `year`, `proxied_url`,
 `reason` (`title`/`year` are blank for plain-text input, populated from a CSV):
 
@@ -213,7 +230,7 @@ URL or a genuinely gated publisher.
 
 Publishers whose PDFs are gated behind JavaScript or bot-checks
 (Elsevier ScienceDirect / `linkinghub`, SSRN, ResearchGate, Radware/perfdrive
-bot-walls) are detected up front and written to `<infile>_needs_browser.csv`
+bot-walls) are detected up front and written to `<outroot>/needs_browser.csv`
 (same three columns) **instead of being retried pointlessly with curl**. Feed
 that file to `fetch_browser.py` — see
 [Fetching gated PDFs with a browser](#fetching-gated-pdfs-with-a-browser-fetch_browserpy).
@@ -315,7 +332,7 @@ the counter advancing. Raising `-j` (e.g. `-j 40`) speeds up a big list.
 
 With `-r`, any DOI that never leaves `doi.org` — a dead/invalid DOI, or one the
 resolver couldn't reach — is written to a separate file (default
-`<infile>_unresolved.<ext>`, override with `-u`), one bare DOI per line, so you
+`<outroot>/unresolved.txt`, override with `-u`), one bare DOI per line, so you
 can investigate or re-run just those.
 
 ## The three problem files at a glance
@@ -324,9 +341,9 @@ A full run can produce up to three "problem" lists:
 
 | File | When | Contains |
 |------|------|----------|
-| `<infile>_unresolved.<ext>` | with `-r` | DOIs that never resolved past `doi.org` |
-| `<infile>_failed.csv` | with `-d` | links that downloaded but weren't a valid PDF, or failed entirely |
-| `<infile>_needs_browser.csv` | with `-d` | JS/bot-gated links for the browser step |
+| `<outroot>/unresolved.txt` | with `-r` | DOIs that never resolved past `doi.org` |
+| `<outroot>/failed.csv` | with `-d` | links that downloaded but weren't a valid PDF, or failed entirely |
+| `<outroot>/needs_browser.csv` | with `-d` | JS/bot-gated links for the browser step |
 
 If a stage has no problems, its file is simply not written.
 
@@ -398,7 +415,7 @@ DOI-only (use -r to resolve them).`
 Same flags as `proxify.py` (`-d`, `-o`, `--htmldir`, `--abstractdir`, `-c`,
 `-g`, `-f`, `-b`, `-r`, `-j`, `-u`, `--no-arxiv-oa`, `-m`), minus the
 text-list-specific `-e`. The proxied URL list is written to
-`<infile>_proxied.txt`.
+`<outroot>/proxied.txt`.
 
 ## Re-running a report CSV
 
@@ -413,7 +430,7 @@ consistent across all of them.
 
 `curl` cannot pass the JavaScript / bot-checks used by Elsevier ScienceDirect,
 Wiley, SSRN, ResearchGate, and similar sites — no matter which cookies it sends.
-`proxify.py` lists those links in `<infile>_needs_browser.csv`.
+`proxify.py` lists those links in `<outroot>/needs_browser.csv`.
 `fetch_browser.py` picks that file up, drives a real Chromium via Playwright
 (reusing your cookies so you stay logged in through the proxy), lets the page's
 JavaScript run, finds the real PDF, and downloads it.
@@ -469,15 +486,15 @@ Notes:
 
 ```bash
 # First run: watch the browser, do a few, clear any one-time CAPTCHA
-python3 fetch_browser.py simple_test_dois_needs_browser.csv -c cookies.txt --headful --limit 3
+python3 fetch_browser.py access_all_papers/needs_browser.csv -c cookies.txt --headful --limit 3
 
 # Then let it run the whole list
-python3 fetch_browser.py simple_test_dois_needs_browser.csv -c cookies.txt
+python3 fetch_browser.py access_all_papers/needs_browser.csv -c cookies.txt
 ```
 
 Input may be either the `_needs_browser.csv` from `proxify.py` (it reads the
 `proxied_url` column) or a plain text file with one URL per line. A results CSV
-(`<infile>_browser_results.csv`) records the outcome of every link with status
+(`<outroot>/browser_results.csv`) records the outcome of every link with status
 `pdf` / `abstract` / `html_only` / `failed`.
 
 ## Options
@@ -496,7 +513,7 @@ Input may be either the `_needs_browser.csv` from `proxify.py` (it reads the
 | `--nav-wait` | `goto` wait condition: `load`, `domcontentloaded` (default), `commit` |
 | `--full-resources` | Load images/CSS/fonts too (slower; blocked by default) |
 | `--limit` | Only process the first N links (0 = all) |
-| `--results` | Results CSV path (default: `<infile>_browser_results.csv`) |
+| `--results` | Results CSV path (default: `<outroot>/browser_results.csv`) |
 
 ### If it's still slow
 

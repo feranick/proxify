@@ -402,11 +402,15 @@ def main():
                     help="Netscape cookies.txt for the proxy session")
     ap.add_argument("--proxy-host", default=None,
                     help="your EZproxy host (overrides LIBPROXY_HOST), e.g. libproxy.example.edu")
-    ap.add_argument("-o", "--outdir", default="downloads", help="PDF output dir (default: downloads)")
-    ap.add_argument("--htmldir", default="landing_pages",
-                    help="HTML landing-page dir (default: landing_pages)")
-    ap.add_argument("--abstractdir", default="abstract_failed",
-                    help="abstract dir (default: abstract_failed)")
+    ap.add_argument("--outroot", default=None,
+                    help="parent folder for all output. Default: the folder the input "
+                         "file is in (so it converges with proxify output), else the "
+                         "input name without extension.")
+    ap.add_argument("-o", "--outdir", default=None, help="PDF output dir (default: <outroot>/downloads)")
+    ap.add_argument("--htmldir", default=None,
+                    help="HTML landing-page dir (default: <outroot>/landing_pages)")
+    ap.add_argument("--abstractdir", default=None,
+                    help="abstract dir (default: <outroot>/abstract_failed)")
     ap.add_argument("--headful", action="store_true",
                     help="show the browser window (helps with some bot-checks)")
     ap.add_argument("--delay", type=float, default=0.3,
@@ -424,9 +428,19 @@ def main():
                          "since only the HTML is needed)")
     ap.add_argument("--limit", type=int, default=0, help="only process the first N links (0 = all)")
     ap.add_argument("--results", default=None,
-                    help="results CSV path (default: <infile>_browser_results.csv)")
+                    help="results CSV path (default: <outroot>/browser_results.csv)")
     args = ap.parse_args()
     pm.set_proxy_host(args.proxy_host)
+
+    # Output goes into the input file's folder if it has one (so PDFs converge
+    # with what proxify produced), otherwise a folder named after the input.
+    indir = os.path.dirname(args.infile)
+    root = args.outroot or indir or pm.output_root(os.path.basename(args.infile))
+    os.makedirs(root, exist_ok=True)
+    outdir = args.outdir or os.path.join(root, "downloads")
+    htmldir = args.htmldir or os.path.join(root, "landing_pages")
+    abstractdir = args.abstractdir or os.path.join(root, "abstract_failed")
+    results_path = args.results or os.path.join(root, "browser_results.csv")
 
     targets = read_targets(args.infile)
     if args.limit > 0:
@@ -436,17 +450,10 @@ def main():
         return
     print(f"{len(targets)} link(s) to fetch via browser.")
 
-    results = run(targets, args.cookies, args.outdir, args.htmldir, args.abstractdir,
+    results = run(targets, args.cookies, outdir, htmldir, abstractdir,
                   args.headful, args.delay, args.timeout, args.nav_wait,
                   args.settle, not args.full_resources)
 
-    results_path = args.results
-    if results_path is None:
-        if "." in args.infile:
-            base, ext = args.infile.rsplit(".", 1)
-            results_path = f"{base}_browser_results.csv"
-        else:
-            results_path = f"{args.infile}_browser_results.csv"
     with open(results_path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         w.writerow(["original_doi", "url", "status", "saved_path"])
