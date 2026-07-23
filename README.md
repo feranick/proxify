@@ -490,16 +490,26 @@ Notes:
 
 ## Usage
 
-```bash
-# First run: watch the browser, do a few, clear any one-time CAPTCHA
-python3 fetch_browser.py access_all_papers/needs_browser.csv -c cookies.txt --headful --limit 3
+You can point it at the folder, the original CSV name, or the file itself — it
+finds `needs_browser.csv` inside the folder automatically. All three are
+equivalent:
 
-# Then let it run the whole list
-python3 fetch_browser.py access_all_papers/needs_browser.csv -c cookies.txt
+```bash
+python3 fetch_browser.py access_all_papers              -c cookies.txt   # the folder
+python3 fetch_browser.py access_all_papers.csv          -c cookies.txt   # the original name
+python3 fetch_browser.py access_all_papers/needs_browser.csv -c cookies.txt   # the file
 ```
 
-Input may be either the `_needs_browser.csv` from `proxify.py` (it reads the
-`proxied_url` column) or a plain text file with one URL per line. A results CSV
+Recommended flow — a small headful test first to clear any one-time CAPTCHA,
+then the whole list:
+
+```bash
+python3 fetch_browser.py access_all_papers -c cookies.txt --headful --limit 3
+python3 fetch_browser.py access_all_papers -c cookies.txt
+```
+
+Input may also be a plain text file with one URL per line. Output lands in the
+same `access_all_papers/` folder, and a results CSV
 (`<outroot>/browser_results.csv`) records the outcome of every link with status
 `pdf` / `abstract` / `html_only` / `failed`.
 
@@ -507,7 +517,7 @@ Input may be either the `_needs_browser.csv` from `proxify.py` (it reads the
 
 | Flag | Description |
 |------|-------------|
-| `infile` | `needs_browser` CSV, or a plain URL list |
+| `infile` | The `needs_browser.csv`, its output folder, the original input name, or a plain URL list |
 | `-c`, `--cookies` | Netscape `cookies.txt` for the proxy session |
 | `-o`, `--outdir` | PDF output dir (default: `downloads`) |
 | `--htmldir` | HTML landing-page dir (default: `landing_pages`) |

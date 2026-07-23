@@ -137,6 +137,26 @@ def read_targets(path: str):
     return targets
 
 
+def resolve_input(infile: str) -> str:
+    """Find the actual needs_browser CSV to read.
+
+    Accepts, for convenience, any of:
+      * the file itself           (access_all_papers/needs_browser.csv)
+      * its output folder         (access_all_papers/  or  access_all_papers)
+      * the original input name    (access_all_papers.csv)
+    and returns the folder's needs_browser.csv when one exists. Otherwise
+    returns the path unchanged.
+    """
+    if os.path.isdir(infile):
+        cand = os.path.join(infile, "needs_browser.csv")
+        return cand if os.path.exists(cand) else infile
+    if os.path.basename(infile) != "needs_browser.csv":
+        cand = os.path.join(pm.output_root(infile), "needs_browser.csv")
+        if os.path.exists(cand):
+            return cand
+    return infile
+
+
 def normalize_nav_url(url: str) -> str:
     """Rewrite known flaky redirect stubs to the page they resolve to.
 
@@ -424,7 +444,10 @@ def run(targets, cookies_path, outdir, htmldir, abstractdir,
 def main():
     ap = argparse.ArgumentParser(
         description="Fetch JS/bot-gated PDFs with a headless browser, reusing cookies.")
-    ap.add_argument("infile", help="needs_browser CSV (from proxify.py) or a plain URL list")
+    ap.add_argument("infile",
+                    help="the needs_browser.csv, or its output folder, or the original "
+                         "input name (the folder's needs_browser.csv is found "
+                         "automatically); also accepts a plain URL list")
     ap.add_argument("-c", "--cookies", default=None,
                     help="Netscape cookies.txt for the proxy session")
     ap.add_argument("--proxy-host", default=None,
@@ -459,17 +482,22 @@ def main():
     args = ap.parse_args()
     pm.set_proxy_host(args.proxy_host)
 
+    # Accept the folder / original CSV and locate needs_browser.csv inside it.
+    infile = resolve_input(args.infile)
+    if infile != args.infile:
+        print(f"Using {infile}")
+
     # Output goes into the input file's folder if it has one (so PDFs converge
     # with what proxify produced), otherwise a folder named after the input.
-    indir = os.path.dirname(args.infile)
-    root = args.outroot or indir or pm.output_root(os.path.basename(args.infile))
+    indir = os.path.dirname(infile)
+    root = args.outroot or indir or pm.output_root(os.path.basename(infile))
     os.makedirs(root, exist_ok=True)
     outdir = args.outdir or os.path.join(root, "downloads")
     htmldir = args.htmldir or os.path.join(root, "landing_pages")
     abstractdir = args.abstractdir or os.path.join(root, "abstract_failed")
     results_path = args.results or os.path.join(root, "browser_results.csv")
 
-    targets = read_targets(args.infile)
+    targets = read_targets(infile)
     if args.limit > 0:
         targets = targets[:args.limit]
     if not targets:
