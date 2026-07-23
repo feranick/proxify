@@ -115,6 +115,7 @@ def build_records(items, args, resolved):
 def main():
     ap = argparse.ArgumentParser(
         description="Download papers listed in a metadata CSV via a library proxy.")
+    ap.add_argument("--version", action="version", version=f"%(prog)s {pm.__version__}")
     ap.add_argument("infile", help="metadata CSV (doi/title/year/pdf_url/landing_url/...)")
     ap.add_argument("outfile", nargs="?", default=None,
                     help="URL list output (default: <outroot>/proxied.txt)")

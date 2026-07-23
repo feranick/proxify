@@ -595,6 +595,7 @@ def _run_browser(queue, cookies_path, outdir, pagedir, headful, delay, timeout_m
 def main():
     ap = argparse.ArgumentParser(
         description="Fetch gated PDFs/abstracts: curl-first, browser only when blocked.")
+    ap.add_argument("--version", action="version", version=f"%(prog)s {pm.__version__}")
     ap.add_argument("infile",
                     help="the needs_browser.csv, or its output folder, or the original "
                          "input name (the folder's needs_browser.csv is found "

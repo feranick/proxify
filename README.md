@@ -1,5 +1,8 @@
 # Library-proxy PDF toolkit
 
+Version **2026.07.23.1** — check with `python3 proxify.py --version` (also
+`proxify_csv.py --version`, `fetch_browser.py --version`).
+
 Fetch paper PDFs through a library proxy (**EZproxy**) using your authenticated session
 cookies. Three scripts, sharing one core:
 
