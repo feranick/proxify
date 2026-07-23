@@ -346,20 +346,23 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 
-def curl_bytes(url: str, cookies_path, timeout_s: int = 30) -> bytes:
-    """Fetch a URL with curl (following redirects, reusing cookies). Returns
-    the raw bytes, or b'' on any error. Bounded by timeout_s."""
+def curl_bytes(url: str, cookies_path, timeout_s: int = 30):
+    """Fetch a URL with curl (following redirects, reusing cookies).
+    Returns (data_bytes, curl_exit_code). curl exit 28 == its own timeout."""
     if shutil.which("curl") is None:
-        return b""
+        return b"", -1
     cmd = ["curl", "-sL", "--http1.1", "--connect-timeout", "15",
            "--max-time", str(timeout_s), "-A", UA]
     if cookies_path:
         cmd += ["-b", cookies_path, "-c", cookies_path]
     cmd += [url]
     try:
-        return subprocess.run(cmd, capture_output=True, timeout=timeout_s + 15).stdout or b""
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout_s + 15)
+        return (r.stdout or b""), r.returncode
+    except subprocess.TimeoutExpired:
+        return b"", 28
     except Exception:
-        return b""
+        return b"", -1
 
 
 def html_is_usable(html: str) -> bool:
@@ -400,7 +403,11 @@ def save_page(pagedir: str, stem: str, html: str, page_url: str,
 # --------------------------------------------------------------------------
 def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
         nav_wait, settle_ms, block_resources, curl_first, pdf_timeout_ms,
-        curl_timeout_ms):
+        curl_timeout_ms, verbose=False):
+    def vlog(msg):
+        if verbose:
+            print(msg, flush=True)
+
     os.makedirs(outdir, exist_ok=True)
     results = []                                   # (original, url, status, saved_path)
     counts = {"pdf": 0, "abstract": 0, "html": 0, "failed": 0}
@@ -420,7 +427,7 @@ def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
 
     curl_secs = max(1, curl_timeout_ms // 1000)    # page fetch: bail fast on a stall
     pdf_secs = max(1, pdf_timeout_ms // 1000)
-    curl_fetch = lambda u: (curl_bytes(u, cookies_path, pdf_secs), "")
+    curl_fetch = lambda u: (curl_bytes(u, cookies_path, pdf_secs)[0], "")
 
     # ---- Phase 1: curl-first (no browser) ----
     browser_queue = []                             # (t, stem)
@@ -429,32 +436,44 @@ def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
             original, url = t["original"], t["url"]
             stem = make_stem(t, i)
             nav = normalize_nav_url(url)
-            print(f"[curl {i}/{total}] {nav}")
-            data = curl_bytes(nav, cookies_path, curl_secs)
+            print(f"[curl {i}/{total}] {nav}", flush=True)
+            vlog(f"        curl GET (up to {curl_secs}s)…")
+            t0 = time.time()
+            data, rc = curl_bytes(nav, cookies_path, curl_secs)
+            vlog(f"        curl exit {rc}, {len(data)} bytes, {time.time() - t0:.1f}s"
+                 + (" [TIMED OUT]" if rc == 28 else ""))
             body = data if data.startswith(b"%PDF") else None
             html = "" if body else data.decode("utf-8", "ignore")
             if not body and html:                  # page may link to a PDF curl can grab
                 pdf_url = discover_pdf_url(html, nav)
                 if pdf_url:
-                    pdata = curl_bytes(pdf_url, cookies_path, pdf_secs)
+                    vlog(f"        found PDF link -> curl GET (up to {pdf_secs}s): {pdf_url[:100]}")
+                    t1 = time.time()
+                    pdata, prc = curl_bytes(pdf_url, cookies_path, pdf_secs)
+                    vlog(f"        PDF-link curl exit {prc}, {len(pdata)} bytes, "
+                         f"{time.time() - t1:.1f}s")
                     if pdata.startswith(b"%PDF"):
                         body = pdata
+                else:
+                    vlog("        no citation_pdf_url / PDF anchor on page")
             if body:
                 dest = os.path.join(outdir, stem + ".pdf")
                 with open(dest, "wb") as f:
                     f.write(body)
                 counts["pdf"] += 1
                 results.append((original, url, "pdf", dest))
-                print(f"        OK: PDF via curl -> {dest}")
+                print(f"        OK: PDF via curl -> {dest}", flush=True)
             elif html and html_is_usable(html):
                 pp, ip = save_page(pagedir, stem, html, nav, original, nav, curl_fetch)
                 had = bool(abstract_text(html))
                 counts["abstract" if had else "html"] += 1
                 results.append((original, url, "abstract" if had else "html", pp))
-                print(f"        page via curl -> {pp}" + (" (+image)" if ip else ""))
+                print(f"        page via curl -> {pp}" + (" (+image)" if ip else ""), flush=True)
             else:
                 browser_queue.append((t, stem))
-                print("        curl blocked/empty -> queued for browser")
+                why = ("curl timed out" if rc == 28 else
+                       "empty response" if not data else "bot-wall/challenge stub")
+                print(f"        {why} -> queued for browser", flush=True)
             if delay:
                 time.sleep(delay)
     else:
@@ -464,7 +483,7 @@ def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
     if browser_queue:
         _run_browser(browser_queue, cookies_path, outdir, pagedir, headful, delay,
                      timeout_ms, nav_wait, settle_ms, block_resources, pdf_timeout_ms,
-                     results, counts)
+                     results, counts, verbose)
     else:
         print("\nAll links handled without the browser.")
 
@@ -475,7 +494,12 @@ def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
 
 
 def _run_browser(queue, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
-                 nav_wait, settle_ms, block_resources, pdf_timeout_ms, results, counts):
+                 nav_wait, settle_ms, block_resources, pdf_timeout_ms, results, counts,
+                 verbose=False):
+    def vlog(msg):
+        if verbose:
+            print(msg, flush=True)
+
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -526,12 +550,15 @@ def _run_browser(queue, cookies_path, outdir, pagedir, headful, delay, timeout_m
         def fetch_once(target_url):
             nav = normalize_nav_url(target_url)
             if nav != target_url:
-                print(f"        -> {nav}")
+                print(f"        -> {nav}", flush=True)
+            vlog(f"        browser goto (up to {timeout_ms // 1000}s)…")
+            t0 = time.time()
             try:
                 page.goto(nav, wait_until=nav_wait, timeout=timeout_ms)
             except Exception as e:
                 print(f"        (navigation didn't fully settle: {type(e).__name__}; "
-                      f"using partial page)")
+                      f"using partial page)", flush=True)
+            vlog(f"        goto done in {time.time() - t0:.1f}s; url now {page.url}")
             if settle_ms:
                 page.wait_for_timeout(settle_ms)
             if "linkinghub" in (page.url or ""):
@@ -540,18 +567,24 @@ def _run_browser(queue, cookies_path, outdir, pagedir, headful, delay, timeout_m
                 except Exception:
                     pass
             html = safe_content(page)
+            vlog(f"        got {len(html)} bytes of HTML")
             body = None
             pdf_url = discover_pdf_url(html, page.url)
             if pdf_url:
+                vlog(f"        PDF probe (up to {pdf_timeout // 1000}s): {pdf_url[:100]}")
+                t1 = time.time()
                 data, _ = br_fetch(pdf_url)
+                vlog(f"        PDF probe returned {len(data)} bytes in {time.time() - t1:.1f}s")
                 if data.startswith(b"%PDF"):
                     body = data
+            else:
+                vlog("        no citation_pdf_url / PDF anchor on page")
             return body, html
 
         total = len(queue)
         for j, (t, stem) in enumerate(queue, start=1):
             original, url = t["original"], t["url"]
-            print(f"[browser {j}/{total}] {url}")
+            print(f"[browser {j}/{total}] {url}", flush=True)
             try:
                 body, html = fetch_once(url)
                 src = url
@@ -559,7 +592,7 @@ def _run_browser(queue, cookies_path, outdir, pagedir, headful, delay, timeout_m
                 if not body and not abstract_text(html):
                     fb = landing_fallback_url(original, page.url)
                     if fb:
-                        print("        no PDF/abstract here — retrying via landing page")
+                        print("        no PDF/abstract here — retrying via landing page", flush=True)
                         try:
                             body2, html2 = fetch_once(fb)
                             if body2:
@@ -567,24 +600,24 @@ def _run_browser(queue, cookies_path, outdir, pagedir, headful, delay, timeout_m
                             if html2:
                                 html, src = html2, fb
                         except Exception as e:
-                            print(f"        (landing fallback failed: {type(e).__name__})")
+                            print(f"        (landing fallback failed: {type(e).__name__})", flush=True)
                 if body:
                     dest = os.path.join(outdir, stem + ".pdf")
                     with open(dest, "wb") as fh:
                         fh.write(body)
                     counts["pdf"] += 1
                     results.append((original, url, "pdf", dest))
-                    print(f"        OK: PDF saved -> {dest}")
+                    print(f"        OK: PDF saved -> {dest}", flush=True)
                 else:
                     pp, ip = save_page(pagedir, stem, html, page.url, original, src, br_fetch)
                     had = bool(abstract_text(html))
                     counts["abstract" if had else "html"] += 1
                     results.append((original, url, "abstract" if had else "html", pp))
-                    print(f"        no PDF — page saved -> {pp}" + (" (+image)" if ip else ""))
+                    print(f"        no PDF — page saved -> {pp}" + (" (+image)" if ip else ""), flush=True)
             except Exception as e:
                 counts["failed"] += 1
                 results.append((original, url, f"failed: {type(e).__name__}", ""))
-                print(f"        FAILED: {e}")
+                print(f"        FAILED: {e}", flush=True)
             if delay:
                 time.sleep(delay)
 
@@ -635,6 +668,9 @@ def main():
                     help="load images/CSS/fonts too (slower; default blocks them "
                          "since only the HTML is needed)")
     ap.add_argument("--limit", type=int, default=0, help="only process the first N links (0 = all)")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="log each step (curl exit code, bytes, timing) so you can see "
+                         "exactly what a slow link is doing")
     ap.add_argument("--results", default=None,
                     help="results CSV path (default: <outroot>/browser_results.csv)")
     args = ap.parse_args()
@@ -665,7 +701,7 @@ def main():
     results = run(targets, args.cookies, outdir, pagedir,
                   args.headful, args.delay, args.timeout, args.nav_wait,
                   args.settle, not args.full_resources, args.curl_first,
-                  args.pdf_timeout, args.curl_timeout)
+                  args.pdf_timeout, args.curl_timeout, args.verbose)
 
     with open(results_path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
