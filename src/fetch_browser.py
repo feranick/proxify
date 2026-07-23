@@ -137,6 +137,22 @@ def read_targets(path: str):
     return targets
 
 
+def normalize_nav_url(url: str) -> str:
+    """Rewrite known flaky redirect stubs to the page they resolve to.
+
+    Elsevier's `linkinghub.elsevier.com/retrieve/pii/<PII>` is only a redirect
+    to `sciencedirect.com/science/article/pii/<PII>`; under automation that hop
+    often hangs, so we jump straight to ScienceDirect (which loads and carries
+    the abstract). Works for both proxied and bare forms.
+    """
+    m = re.search(r"linkinghub[.-]elsevier[.-]com(\.[^/]*)?/retrieve/pii/([^/?#]+)", url)
+    if m:
+        suffix, pii = m.group(1), m.group(2)   # suffix e.g. '.libproxy.mit.edu' (proxied)
+        host = ("www-sciencedirect-com" + suffix) if suffix else "www.sciencedirect.com"
+        return f"https://{host}/science/article/pii/{pii}"
+    return url
+
+
 # --------------------------------------------------------------------------
 # PDF-link discovery on a rendered page
 # --------------------------------------------------------------------------
@@ -298,9 +314,16 @@ def run(targets, cookies_path, outdir, htmldir, abstractdir,
         def fetch_once(target_url):
             """Navigate to target_url and try for a PDF.
             Returns (pdf_bytes_or_None, rendered_html)."""
+            target_url = normalize_nav_url(target_url)   # skip flaky redirect stubs
             page.goto(target_url, wait_until=nav_wait, timeout=timeout_ms)
             if settle_ms:
                 page.wait_for_timeout(settle_ms)
+            # If we still landed on a redirect stub, wait briefly for the bounce.
+            if "linkinghub" in (page.url or ""):
+                try:
+                    page.wait_for_load_state("load", timeout=8000)
+                except Exception:
+                    pass
             html = safe_content(page)
             pdf_url = discover_pdf_url(html, page.url)
             body = None
