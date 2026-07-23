@@ -216,6 +216,66 @@ def discover_pdf_url(html: str, page_url: str):
     return None
 
 
+_IMG_EXT = {
+    "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png",
+    "image/gif": ".gif", "image/webp": ".webp", "image/tiff": ".tif",
+    "image/svg+xml": ".svg",
+}
+
+
+def discover_image_url(html: str, page_url: str):
+    """Find a companion graphical-abstract / thumbnail image on a landing page.
+
+    Priority: an <img> inside a 'graphical'/'abstract' figure, then the
+    `og:image` meta, then `<link rel="image_src">`. Returns an absolute,
+    proxy-routed URL or None.
+    """
+    m = re.search(
+        r'<(figure|div)[^>]*(?:class|id)=["\'][^"\']*(?:graphical|abstract)[^"\']*["\']'
+        r'[^>]*>(.*?)</\1>', html, re.IGNORECASE | re.DOTALL)
+    if m:
+        im = re.search(r'<img[^>]+(?:data-src|src)=["\'](.*?)["\']',
+                       m.group(2), re.IGNORECASE | re.DOTALL)
+        if im and im.group(1).strip():
+            return _abs_and_proxied(im.group(1).strip(), page_url)
+    for pat in (
+        r'<meta[^>]+property=["\']og:image["\'][^>]*content=["\'](.*?)["\']',
+        r'<meta[^>]+content=["\'](.*?)["\'][^>]*property=["\']og:image["\']',
+    ):
+        mm = re.search(pat, html, re.IGNORECASE | re.DOTALL)
+        if mm and mm.group(1).strip():
+            return _abs_and_proxied(mm.group(1).strip(), page_url)
+    mm = re.search(r'<link[^>]+rel=["\']image_src["\'][^>]*href=["\'](.*?)["\']',
+                   html, re.IGNORECASE | re.DOTALL)
+    if mm and mm.group(1).strip():
+        return _abs_and_proxied(mm.group(1).strip(), page_url)
+    return None
+
+
+def image_ext(content_type: str, url: str) -> str:
+    """Pick a file extension from the response content-type, else the URL."""
+    ct = (content_type or "").split(";")[0].strip().lower()
+    if ct in _IMG_EXT:
+        return _IMG_EXT[ct]
+    m = re.search(r"\.(jpg|jpeg|png|gif|webp|tif|tiff|svg)(?:[?#]|$)", url, re.IGNORECASE)
+    if m:
+        return "." + m.group(1).lower().replace("jpeg", "jpg").replace("tiff", "tif")
+    return ".jpg"
+
+
+def looks_like_image(data: bytes, content_type: str) -> bool:
+    """True if bytes look like a real image (magic bytes) or a declared image type."""
+    if content_type.split(";")[0].strip().lower() in _IMG_EXT:
+        return True
+    return (
+        data[:3] == b"\xff\xd8\xff"                      # JPEG
+        or data[:8] == b"\x89PNG\r\n\x1a\n"              # PNG
+        or data[:6] in (b"GIF87a", b"GIF89a")           # GIF
+        or (data[:4] == b"RIFF" and data[8:12] == b"WEBP")  # WEBP
+        or data[:4] in (b"II*\x00", b"MM\x00*")         # TIFF
+    )
+
+
 def landing_fallback_url(original: str, current_url: str):
     """A landing-page URL to try when the direct PDF attempt fails.
 
@@ -368,6 +428,28 @@ def run(targets, cookies_path, outdir, htmldir, abstractdir,
                 body = None
             return body, html
 
+        def save_companion_image(html, page_url, stem):
+            """When no PDF is available, save the page's graphical-abstract /
+            thumbnail image next to the abstract, same stem + image extension."""
+            img_url = discover_image_url(html, page_url)
+            if not img_url:
+                return None
+            try:
+                resp = context.request.get(img_url, timeout=min(timeout_ms, 30000))
+                if not resp.ok:
+                    return None
+                data = resp.body()
+                ct = resp.headers.get("content-type", "")
+            except Exception:
+                return None
+            if not data or not looks_like_image(data, ct):
+                return None
+            os.makedirs(abstractdir, exist_ok=True)
+            dest = os.path.join(abstractdir, stem + image_ext(ct, img_url))
+            with open(dest, "wb") as fh:
+                fh.write(data)
+            return dest
+
         total = len(targets)
         used_names = set()
         for i, t in enumerate(targets, start=1):
@@ -434,6 +516,10 @@ def run(targets, cookies_path, outdir, htmldir, abstractdir,
                         html_only += 1
                         status, saved = "html_only", html_dest
                         print(f"        no PDF, no abstract — HTML saved -> {html_dest}")
+                    # Grab the companion graphical-abstract image, if any.
+                    img_dest = save_companion_image(html, page.url, stem)
+                    if img_dest:
+                        print(f"        companion image saved -> {os.path.basename(img_dest)}")
             except Exception as e:
                 failed += 1
                 status = f"failed: {type(e).__name__}"

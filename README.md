@@ -456,6 +456,13 @@ there: that page holds the real abstract, and sometimes a `citation_pdf_url`
 that works even though the direct link didn't. The abstract file records which
 URL it actually came from.
 
+**Companion image.** When no PDF can be pulled, the script also grabs the
+landing page's graphical-abstract / thumbnail image (from a graphical-abstract
+figure, else `og:image`, else `<link rel="image_src">`) and saves it next to the
+abstract in `abstract_failed/` with the **same base name** and the image's own
+extension, e.g. `Biesuz_Flash_sintering_of_ceramics_2019.jpg`. Skipped if no
+image is found or the download isn't actually an image.
+
 ## Setting up Playwright (one time)
 
 Playwright is only needed for this step. Install the package and its Chromium
