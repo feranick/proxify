@@ -528,6 +528,7 @@ same `access_all_papers/` folder, and a results CSV
 | `-o`, `--outdir` | PDF output dir (default: `<outroot>/downloads`) |
 | `--pagedir` (alias `--abstractdir`) | Saved HTML page dir when no PDF (default: `<outroot>/abstract_failed`) |
 | `--no-curl-first` | Skip the curl pass; use the browser for every link |
+| `--curl-timeout` | ms cap on each curl page fetch (default: 20000); a stalled page bails to the browser |
 | `--pdf-timeout` | ms cap on each PDF-endpoint fetch (default: 15000) so a stalled publisher can't wedge the run |
 | `--headful` | Show the browser window (helps past some bot-checks) |
 | `--delay` | Seconds between links (default: 0.3) |
@@ -540,13 +541,15 @@ same `access_all_papers/` folder, and a results CSV
 
 ### If it's still slow
 
-Curl-first already avoids launching the browser for links curl can handle. When
-the browser does run, it blocks images/CSS/fonts (only the HTML is needed) and
-skips the old `networkidle` wait. A stalled PDF endpoint is capped by
-`--pdf-timeout` (15 s) and a stuck navigation by `--timeout` (30 s). To go faster
-still: lower `--settle` (e.g. `--settle 500`), `--pdf-timeout`, or `--timeout`. If
-a particular publisher needs its scripts/styles to reveal the PDF link, add
-`--full-resources` for that run.
+Curl-first already avoids launching the browser for links curl can handle. Each
+curl page fetch is capped by `--curl-timeout` (20 s), so a publisher that stalls
+one request bails to the browser instead of hanging. When the browser does run,
+it blocks images/CSS/fonts (only the HTML is needed), skips the old `networkidle`
+wait, caps each PDF-endpoint fetch at `--pdf-timeout` (15 s), and each navigation
+at `--timeout` (30 s). If many pages stall, lower `--curl-timeout` (e.g.
+`--curl-timeout 10000`); other speed levers are `--settle 500`, `--pdf-timeout`,
+`--timeout`. If a publisher needs its scripts/styles to reveal the PDF link, add
+`--full-resources`.
 
 ## Two honest expectations
 

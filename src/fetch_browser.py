@@ -351,7 +351,7 @@ def curl_bytes(url: str, cookies_path, timeout_s: int = 30) -> bytes:
     the raw bytes, or b'' on any error. Bounded by timeout_s."""
     if shutil.which("curl") is None:
         return b""
-    cmd = ["curl", "-sL", "--http1.1", "--connect-timeout", "20",
+    cmd = ["curl", "-sL", "--http1.1", "--connect-timeout", "15",
            "--max-time", str(timeout_s), "-A", UA]
     if cookies_path:
         cmd += ["-b", cookies_path, "-c", cookies_path]
@@ -399,7 +399,8 @@ def save_page(pagedir: str, stem: str, html: str, page_url: str,
 # Main loop: curl-first, browser only for links curl can't crack
 # --------------------------------------------------------------------------
 def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
-        nav_wait, settle_ms, block_resources, curl_first, pdf_timeout_ms):
+        nav_wait, settle_ms, block_resources, curl_first, pdf_timeout_ms,
+        curl_timeout_ms):
     os.makedirs(outdir, exist_ok=True)
     results = []                                   # (original, url, status, saved_path)
     counts = {"pdf": 0, "abstract": 0, "html": 0, "failed": 0}
@@ -417,7 +418,7 @@ def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
         used_names.add(stem.lower())
         return stem
 
-    curl_secs = max(1, timeout_ms // 1000)
+    curl_secs = max(1, curl_timeout_ms // 1000)    # page fetch: bail fast on a stall
     pdf_secs = max(1, pdf_timeout_ms // 1000)
     curl_fetch = lambda u: (curl_bytes(u, cookies_path, pdf_secs), "")
 
@@ -614,6 +615,9 @@ def main():
     ap.add_argument("--pdf-timeout", type=int, default=15000,
                     help="ms cap on each PDF-endpoint fetch (default: 15000) so a "
                          "stalled publisher can't wedge the run")
+    ap.add_argument("--curl-timeout", type=int, default=20000,
+                    help="ms cap on each curl page fetch (default: 20000); a stalled "
+                         "page bails to the browser rather than hanging")
     ap.add_argument("--headful", action="store_true",
                     help="show the browser window (helps with some bot-checks)")
     ap.add_argument("--delay", type=float, default=0.3,
@@ -659,7 +663,8 @@ def main():
 
     results = run(targets, args.cookies, outdir, pagedir,
                   args.headful, args.delay, args.timeout, args.nav_wait,
-                  args.settle, not args.full_resources, args.curl_first, args.pdf_timeout)
+                  args.settle, not args.full_resources, args.curl_first,
+                  args.pdf_timeout, args.curl_timeout)
 
     with open(results_path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
