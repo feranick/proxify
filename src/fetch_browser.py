@@ -161,15 +161,16 @@ def normalize_nav_url(url: str) -> str:
     """Rewrite known flaky redirect stubs to the page they resolve to.
 
     Elsevier's `linkinghub.elsevier.com/retrieve/pii/<PII>` is only a redirect
-    to `sciencedirect.com/science/article/pii/<PII>`; under automation that hop
-    often hangs, so we jump straight to ScienceDirect (which loads and carries
-    the abstract). Works for both proxied and bare forms.
+    to ScienceDirect; under automation that hop often hangs, so we jump straight
+    to the ScienceDirect article page. We target `/science/article/abs/pii/<PII>`
+    — the exact page the redirect resolves to — so ScienceDirect doesn't have to
+    do its own /pii/ -> /abs/ redirect on top. Works proxied and bare.
     """
     m = re.search(r"linkinghub[.-]elsevier[.-]com(\.[^/]*)?/retrieve/pii/([^/?#]+)", url)
     if m:
         suffix, pii = m.group(1), m.group(2)   # suffix e.g. '.libproxy.example.edu' (proxied)
         host = ("www-sciencedirect-com" + suffix) if suffix else "www.sciencedirect.com"
-        return f"https://{host}/science/article/pii/{pii}"
+        return f"https://{host}/science/article/abs/pii/{pii}"
     return url
 
 
@@ -334,8 +335,17 @@ def run(targets, cookies_path, outdir, htmldir, abstractdir,
         def fetch_once(target_url):
             """Navigate to target_url and try for a PDF.
             Returns (pdf_bytes_or_None, rendered_html)."""
-            target_url = normalize_nav_url(target_url)   # skip flaky redirect stubs
-            page.goto(target_url, wait_until=nav_wait, timeout=timeout_ms)
+            nav = normalize_nav_url(target_url)          # skip flaky redirect stubs
+            if nav != target_url:
+                print(f"        -> {nav}")
+            # Don't let a slow/looping publisher page wedge the run: if goto
+            # times out we still read whatever rendered (the abstract is usually
+            # already in the DOM).
+            try:
+                page.goto(nav, wait_until=nav_wait, timeout=timeout_ms)
+            except Exception as e:
+                print(f"        (navigation didn't fully settle: {type(e).__name__}; "
+                      f"using partial page)")
             if settle_ms:
                 page.wait_for_timeout(settle_ms)
             # If we still landed on a redirect stub, wait briefly for the bounce.
