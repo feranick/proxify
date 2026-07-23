@@ -126,10 +126,8 @@ def main():
                     help="proxy style (default: host)")
     ap.add_argument("-d", "--download", action="store_true", help="download with curl")
     ap.add_argument("-o", "--outdir", default=None, help="PDF dir (default: <outroot>/downloads)")
-    ap.add_argument("--htmldir", default=None,
-                    help="HTML landing-page dir (default: <outroot>/landing_pages)")
-    ap.add_argument("--abstractdir", default=None,
-                    help="abstract dir (default: <outroot>/abstract_failed)")
+    ap.add_argument("--pagedir", "--abstractdir", default=None, dest="pagedir",
+                    help="saved-HTML-page dir when no PDF (default: <outroot>/abstract_failed)")
     ap.add_argument("-c", "--cookies", default=None,
                     help="Netscape cookies.txt for proxy authentication")
     ap.add_argument("-g", "--pdf-guess", action="store_true",
@@ -168,8 +166,7 @@ def main():
     os.makedirs(root, exist_ok=True)
     outfile = args.outfile or os.path.join(root, "proxied.txt")
     outdir = args.outdir or os.path.join(root, "downloads")
-    htmldir = args.htmldir or os.path.join(root, "landing_pages")
-    abstractdir = args.abstractdir or os.path.join(root, "abstract_failed")
+    pagedir = args.pagedir or os.path.join(root, "abstract_failed")
     unres_file = args.unresolved_file or os.path.join(root, "unresolved.txt")
 
     resolved = _resolve(items, args.jobs, unres_file) if args.resolve_doi else {}
@@ -187,7 +184,7 @@ def main():
         print("Note: login mode without -c/--cookies will just fetch the login page.")
 
     failures, needs_browser = pm.download(
-        records, outdir, args.cookies, htmldir, abstractdir)
+        records, outdir, args.cookies, pagedir)
 
     if failures:
         ff = args.failfile or os.path.join(root, "failed.csv")

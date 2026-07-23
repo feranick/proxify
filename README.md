@@ -16,8 +16,9 @@ All output for a given input goes into **one folder named after that input**
 ```
 access_all_papers/
   downloads/          real PDFs (named <Surname>_<Title>_<Year>.pdf)
-  landing_pages/      HTML when no PDF was obtainable
-  abstract_failed/    abstracts extracted from those pages
+  abstract_failed/    when no PDF: the full HTML page (readable, carries the
+                      abstract + more) as <stem>.html, plus its companion
+                      graphical-abstract image as <stem>.<img>
   proxied.txt         the rewritten URL list
   failed.csv          links that didn't yield a PDF
   needs_browser.csv   JS/bot-gated links for the browser step
@@ -42,14 +43,13 @@ optionally download the PDFs with `curl`.
 Given a text file with one URL (or DOI) per line, the script rewrites each URL
 so it routes through your proxy host, writing everything into a folder named
 after the input file (see the layout shown at the top). It supports
-two proxy styles and can also fetch each link, sorting downloads into three
+two proxy styles and can also fetch each link, sorting downloads into two
 sub-folders:
 
 | Sub-folder | Contents |
 |--------|----------|
 | `downloads/` | Real PDFs only (verified by the `%PDF` magic bytes) |
-| `landing_pages/` | HTML landing/viewer pages when no PDF could be obtained |
-| `abstract_failed/` | Abstract extracted (as `.txt`) from those landing pages |
+| `abstract_failed/` | When no PDF is available, the **full HTML page** saved as `<stem>.html` (a readable file with the abstract plus whatever else the page shows) |
 
 ## Requirements
 
@@ -127,8 +127,7 @@ https://libproxy.example.edu/login?url=https%3A%2F%2Fpubs.acs.org%2Fdoi%2F10.102
 | `-d`, `--download` | Download each proxied link with `curl` |
 | `--outroot` | Parent folder for all output (default: input filename without extension) |
 | `-o`, `--outdir` | Folder for **real PDFs only** (default: `<outroot>/downloads`) |
-| `--htmldir` | Folder for HTML landing pages (default: `<outroot>/landing_pages`) |
-| `--abstractdir` | Folder for extracted abstracts (default: `<outroot>/abstract_failed`) |
+| `--pagedir` (alias `--abstractdir`) | Folder for the full HTML page saved when no PDF is available (default: `<outroot>/abstract_failed`) |
 | `-c`, `--cookies` | Netscape `cookies.txt` file for proxy authentication (with `-d`) |
 | `-g`, `--pdf-guess` | Rewrite known landing/viewer URLs to direct-PDF URLs before proxying |
 | `-f`, `--failfile` | CSV for links that didn't yield a PDF (default: `<outroot>/failed.csv`) |
@@ -191,35 +190,30 @@ what actually landed on disk after every download and classifies each link as:
   `curl` also returned an error (e.g. exit 56), it's still counted as saved,
   with a note explaining the file is intact.
 - **non-PDF page** — file exists but isn't a PDF (usually an HTML
-  landing/viewer page). It is **moved to `landing_pages/`** (not left in
-  `downloads/`), and the script tries to extract an abstract from it.
+  landing/viewer page). The **whole page** is saved into `abstract_failed/` as
+  `<stem>.html` — a readable file that carries the abstract plus whatever else
+  the page shows.
 - **failed** — nothing usable was downloaded; any empty stub file is removed.
 
 The run ends with a summary line, e.g.
-`Summary: 3 PDF(s) saved into downloads/; 43 landing page(s) into landing_pages/ (30 abstract(s) into abstract_failed/); 14 failed; ...`
+`Summary: 3 PDF(s) saved into downloads/; 43 HTML page(s) into abstract_failed/ (30 with an abstract); 14 failed; ...`
 
-### Abstract extraction
-
-When a link yields an HTML landing page instead of a PDF, the script makes a
-best-effort attempt to pull the article abstract out of it and save it as a
-`.txt` in `abstract_failed/`. It looks, in order, for: `citation_abstract` /
-`dc.description` meta tags → JSON-LD `abstract`/`description` → an element whose
-class or id contains `abstract` → `og:description` as a last resort. If nothing
-plausible is found, no `.txt` is written and the reason column notes
-`no abstract found`. Each abstract file is prefixed with the original DOI/URL
-and the source URL for traceability.
+An abstract is still detected (via `citation_abstract` / `dc.description` meta →
+JSON-LD `abstract`/`description` → an element whose class/id contains `abstract`
+→ `og:description`) purely to label the outcome and counts; the saved artifact is
+the full page, not a stripped snippet.
 
 ### Failed-links file (CSV)
 
 Any link that did **not** produce a valid PDF — both hard failures and non-PDF
-landing pages — is written to a CSV (default `<outroot>/failed.csv`, override
+pages — is written to a CSV (default `<outroot>/failed.csv`, override
 with `-f`) with columns `original_doi`, `filename`, `title`, `year`,
 `proxied_url`, `reason`. The `filename` column is the exact base name the paper
 would use, so `fetch_browser.py` names its downloads identically:
 
 ```csv
 original_doi,filename,title,year,proxied_url,reason
-10.1111/jace.15314,Sortino_Continuous_flash_sintering_2017,Continuous flash sintering,2017,https://ceramics-onlinelibrary-wiley-com.libproxy.example.edu/doi/pdf/10.1111/jace.15314,not-a-PDF (HTML landing/viewer page); abstract -> Sortino_Continuous_flash_sintering_2017.txt
+10.1111/jace.15314,Sortino_Continuous_flash_sintering_2017,Continuous flash sintering,2017,https://ceramics-onlinelibrary-wiley-com.libproxy.example.edu/doi/pdf/10.1111/jace.15314,not-a-PDF (HTML page saved; with abstract)
 10.2139/ssrn.3630430,Doe_Some_working_paper_2023,Some working paper,2023,https://www-ssrn-com.libproxy.example.edu/abstract=3630430,download failed (curl exit 22)
 ```
 
@@ -418,7 +412,7 @@ DOI-only (use -r to resolve them).`
 
 ## Options
 
-Same flags as `proxify.py` (`-d`, `-o`, `--htmldir`, `--abstractdir`, `-c`,
+Same flags as `proxify.py` (`-d`, `-o`, `--pagedir`, `-c`,
 `-g`, `-f`, `-b`, `-r`, `-j`, `-u`, `--no-arxiv-oa`, `-m`), minus the
 text-list-specific `-e`. The proxied URL list is written to
 `<outroot>/proxied.txt`.
@@ -434,34 +428,39 @@ consistent across all of them.
 
 # Fetching gated PDFs with a browser (`fetch_browser.py`)
 
-`curl` cannot pass the JavaScript / bot-checks used by Elsevier ScienceDirect,
-Wiley, SSRN, ResearchGate, and similar sites — no matter which cookies it sends.
-`proxify.py` lists those links in `<outroot>/needs_browser.csv`.
-`fetch_browser.py` picks that file up, drives a real Chromium via Playwright
-(reusing your cookies so you stay logged in through the proxy), lets the page's
-JavaScript run, finds the real PDF, and downloads it.
+`proxify.py` lists the JS/bot-gated links (Elsevier ScienceDirect, Wiley, SSRN,
+ResearchGate, …) in `<outroot>/needs_browser.csv`. `fetch_browser.py` picks that
+file up and gets the PDF — or, failing that, the full readable HTML page.
 
-**Papers come first.** For each link it renders the page, locates the PDF (via
-the `citation_pdf_url` meta tag that most publishers emit, then PDF anchors),
-and downloads the actual PDF into `downloads/`. Only when no PDF is obtainable
-does it save the rendered HTML to `landing_pages/` and the abstract to
-`abstract_failed/` — the same three folders as the main script, so output
-converges. Run both from the same directory.
+**Curl-first (default).** For each link it tries `curl` first (fast, no browser)
+and only falls back to Chromium/Playwright when curl is blocked or returns a
+bot-wall stub. If every link is handled by curl, the browser never launches. Use
+`--no-curl-first` to force the browser for all links.
 
-**DOI landing fallback.** When the given link is a *direct PDF* URL and the
-fetch fails, the page in the browser is the PDF endpoint's viewer/challenge
-shell, which has no abstract. In that case — if the input row carries a DOI —
-the script navigates to the DOI landing page (through the proxy) and retries
-there: that page holds the real abstract, and sometimes a `citation_pdf_url`
-that works even though the direct link didn't. The abstract file records which
-URL it actually came from.
+**Papers come first.** For each link (curl or browser) it locates the PDF via
+the `citation_pdf_url` meta tag that most publishers emit, then PDF anchors, and
+downloads the actual PDF into `downloads/`. Only when no PDF is obtainable does
+it save the **full HTML page** as `<stem>.html` in `abstract_failed/` — the same
+folders as the main script, so output converges. Run both from the same
+directory.
 
-**Companion image.** When no PDF can be pulled, the script also grabs the
-landing page's graphical-abstract / thumbnail image (from a graphical-abstract
-figure, else `og:image`, else `<link rel="image_src">`) and saves it next to the
-abstract in `abstract_failed/` with the **same base name** and the image's own
-extension, e.g. `Biesuz_Flash_sintering_of_ceramics_2019.jpg`. Skipped if no
-image is found or the download isn't actually an image.
+**DOI landing fallback.** When the given link is a *direct PDF* URL and the fetch
+fails, the browser page is the PDF endpoint's viewer/challenge shell, which has
+no abstract. In that case — if the input row carries a DOI — the script
+navigates to the DOI landing page (through the proxy) and retries there: that
+page holds the real abstract, and sometimes a `citation_pdf_url` that works even
+though the direct link didn't.
+
+**Companion image.** When no PDF can be pulled, the script also grabs the page's
+graphical-abstract / thumbnail image (from a graphical-abstract figure, else
+`og:image`, else `<link rel="image_src">`) and saves it next to the page in
+`abstract_failed/` with the **same base name** and the image's own extension,
+e.g. `Biesuz_Flash_sintering_of_ceramics_2019.jpg`. Skipped if no image is found
+or the download isn't actually an image.
+
+**No wedging.** Each PDF-endpoint fetch is hard-capped by `--pdf-timeout`
+(default 15 s) so a publisher that holds the connection open can't stall the
+run; the page/abstract is saved regardless.
 
 ## Setting up Playwright (one time)
 
@@ -518,7 +517,7 @@ python3 fetch_browser.py access_all_papers -c cookies.txt
 Input may also be a plain text file with one URL per line. Output lands in the
 same `access_all_papers/` folder, and a results CSV
 (`<outroot>/browser_results.csv`) records the outcome of every link with status
-`pdf` / `abstract` / `html_only` / `failed`.
+`pdf` / `abstract` / `html` / `failed`.
 
 ## Options
 
@@ -526,9 +525,10 @@ same `access_all_papers/` folder, and a results CSV
 |------|-------------|
 | `infile` | The `needs_browser.csv`, its output folder, the original input name, or a plain URL list |
 | `-c`, `--cookies` | Netscape `cookies.txt` for the proxy session |
-| `-o`, `--outdir` | PDF output dir (default: `downloads`) |
-| `--htmldir` | HTML landing-page dir (default: `landing_pages`) |
-| `--abstractdir` | Abstract dir (default: `abstract_failed`) |
+| `-o`, `--outdir` | PDF output dir (default: `<outroot>/downloads`) |
+| `--pagedir` (alias `--abstractdir`) | Saved HTML page dir when no PDF (default: `<outroot>/abstract_failed`) |
+| `--no-curl-first` | Skip the curl pass; use the browser for every link |
+| `--pdf-timeout` | ms cap on each PDF-endpoint fetch (default: 15000) so a stalled publisher can't wedge the run |
 | `--headful` | Show the browser window (helps past some bot-checks) |
 | `--delay` | Seconds between links (default: 0.3) |
 | `--timeout` | Per-navigation timeout in ms (default: 30000) |
@@ -540,11 +540,12 @@ same `access_all_papers/` folder, and a results CSV
 
 ### If it's still slow
 
-By default the browser now blocks images/CSS/fonts (only the HTML is needed) and
-skips the old `networkidle` wait, which were the main time sinks. A stuck page
-is capped by `--timeout` (30 s). To go faster still: lower `--settle` (e.g.
-`--settle 500`) or `--timeout`, and keep the default resource blocking on. If a
-particular publisher needs its scripts/styles to reveal the PDF link, add
+Curl-first already avoids launching the browser for links curl can handle. When
+the browser does run, it blocks images/CSS/fonts (only the HTML is needed) and
+skips the old `networkidle` wait. A stalled PDF endpoint is capped by
+`--pdf-timeout` (15 s) and a stuck navigation by `--timeout` (30 s). To go faster
+still: lower `--settle` (e.g. `--settle 500`), `--pdf-timeout`, or `--timeout`. If
+a particular publisher needs its scripts/styles to reveal the PDF link, add
 `--full-resources` for that run.
 
 ## Two honest expectations

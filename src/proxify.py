@@ -431,20 +431,21 @@ def filename_from_title(title: str, year: str, max_len: int = 150) -> str:
     return filename_from_meta("", title, year, max_len)
 
 
-def download(records, outdir: str, cookies, htmldir: str, abstractdir: str):
+def download(records, outdir: str, cookies, pagedir: str):
     """records: list of dicts with keys orig, proxied, gated.
 
-    Fetch each non-gated link with curl. Only real PDFs land in `outdir`.
-    HTML landing/viewer pages are moved to `htmldir`, and any abstract found in
-    them is written as a .txt into `abstractdir`. Gated links are skipped (curl
-    cannot retrieve them) and reported separately. Returns (failures,
-    needs_browser), each a list of (original_doi, proxied_url, reason).
+    Fetch each non-gated link with curl. Real PDFs land in `outdir`. When the
+    response is not a PDF (an HTML landing/viewer page), the whole page is saved
+    into `pagedir` as <stem>.html — a readable file that carries the abstract
+    plus whatever else the page shows. Gated links are skipped (curl cannot
+    retrieve them) and reported separately. Returns (failures, needs_browser),
+    each a list of (original_doi, filename, title, year, proxied_url, reason).
     """
     if shutil.which("curl") is None:
         raise SystemExit("Error: curl not found on PATH.")
     os.makedirs(outdir, exist_ok=True)
 
-    ok = ok_warn = notpdf = fail = abstracts = 0
+    ok = ok_warn = notpdf = fail = withabs = 0
     failures = []       # (original_doi, filename, title, year, proxied_url, reason)
     needs_browser = []  # (original_doi, filename, title, year, proxied_url, reason)
     used_names = set()  # for de-duplicating filenames
@@ -505,33 +506,23 @@ def download(records, outdir: str, cookies, htmldir: str, abstractdir: str):
                       f"— file is intact).")
         elif file_ok and not is_pdf(dest):
             notpdf += 1
-            # Move the landing page out of the PDF folder into htmldir.
-            os.makedirs(htmldir, exist_ok=True)
-            html_dest = os.path.join(htmldir, stem + ".html")
+            # Not a PDF: keep the whole page as a readable .html in pagedir.
+            os.makedirs(pagedir, exist_ok=True)
+            page_dest = os.path.join(pagedir, stem + ".html")
             try:
-                os.replace(dest, html_dest)
-                saved_as = html_dest
+                os.replace(dest, page_dest)
+                saved_as = page_dest
             except OSError:
                 saved_as = dest
-            # Try to pull an abstract out of the landing page.
-            abstract = extract_abstract(saved_as)
-            reason = "not-a-PDF (HTML landing/viewer page)"
-            abs_note = "no abstract found"
-            if abstract:
-                os.makedirs(abstractdir, exist_ok=True)
-                abs_dest = os.path.join(abstractdir, stem + ".txt")
-                try:
-                    with open(abs_dest, "w", encoding="utf-8") as af:
-                        af.write(f"# DOI/original: {orig}\n"
-                                 f"# Source URL:   {proxied}\n\n{abstract}\n")
-                    abstracts += 1
-                    abs_note = f"abstract -> {os.path.basename(abs_dest)}"
-                except OSError:
-                    abs_note = "abstract found but could not be written"
-            failures.append((orig, stem, title, year, proxied, f"{reason}; {abs_note}"))
+            has_abs = bool(extract_abstract(saved_as))
+            if has_abs:
+                withabs += 1
+            abs_note = "with abstract" if has_abs else "no abstract detected"
+            failures.append((orig, stem, title, year, proxied,
+                             f"not-a-PDF (HTML page saved; {abs_note})"))
             note = "" if rc == 0 else f" (curl exit {rc})"
-            print(f"        WARNING: not a PDF{note} — HTML landing page moved to "
-                  f"{htmldir}/{os.path.basename(saved_as)}; {abs_note}.")
+            print(f"        WARNING: not a PDF{note} — page saved to "
+                  f"{pagedir}/{os.path.basename(saved_as)} ({abs_note}).")
         else:
             fail += 1
             failures.append((orig, stem, title, year, proxied, f"download failed (curl exit {rc})"))
@@ -545,8 +536,8 @@ def download(records, outdir: str, cookies, htmldir: str, abstractdir: str):
     print(f"\nSummary: {ok + ok_warn} PDF(s) saved"
           + (f" ({ok_warn} completed despite a curl warning)" if ok_warn else "")
           + f" into {outdir}/"
-          + f"; {notpdf} landing page(s) into {htmldir}/"
-          + (f" ({abstracts} abstract(s) into {abstractdir}/)" if abstracts else "")
+          + f"; {notpdf} HTML page(s) into {pagedir}/"
+          + (f" ({withabs} with an abstract)" if withabs else "")
           + f"; {fail} failed"
           + (f"; {len(needs_browser)} skipped (need browser)" if needs_browser else "")
           + ".")
@@ -652,10 +643,9 @@ def main() -> None:
                          "without its extension). Everything below goes inside it.")
     ap.add_argument("-o", "--outdir", default=None,
                     help="directory for real PDFs only (default: <outroot>/downloads)")
-    ap.add_argument("--htmldir", default=None,
-                    help="directory for HTML landing/viewer pages (default: <outroot>/landing_pages)")
-    ap.add_argument("--abstractdir", default=None,
-                    help="directory for abstracts (default: <outroot>/abstract_failed)")
+    ap.add_argument("--pagedir", "--abstractdir", default=None, dest="pagedir",
+                    help="directory for saved HTML pages when no PDF is available "
+                         "(default: <outroot>/abstract_failed)")
     ap.add_argument("-c", "--cookies", default=None,
                     help="Netscape cookie.txt file for proxy authentication (used with -d)")
     ap.add_argument("-g", "--pdf-guess", action="store_true",
@@ -685,8 +675,7 @@ def main() -> None:
     os.makedirs(root, exist_ok=True)
     outfile = args.outfile or os.path.join(root, "proxied.txt")
     outdir = args.outdir or os.path.join(root, "downloads")
-    htmldir = args.htmldir or os.path.join(root, "landing_pages")
-    abstractdir = args.abstractdir or os.path.join(root, "abstract_failed")
+    pagedir = args.pagedir or os.path.join(root, "abstract_failed")
 
     with open(infile, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -789,7 +778,7 @@ def main() -> None:
             print("Note: login mode without -c/--cookies will just fetch the login page.")
 
         failures, needs_browser = download(
-            records, outdir, args.cookies, htmldir, abstractdir)
+            records, outdir, args.cookies, pagedir)
 
         if failures:
             failfile = args.failfile or os.path.join(root, "failed.csv")
