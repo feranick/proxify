@@ -492,6 +492,9 @@ def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
                 print(f"        {why} -> queued for browser", flush=True)
             if delay:
                 time.sleep(delay)
+        print(f"\nCurl pass done: {counts['pdf']} PDF(s) + "
+              f"{counts['abstract'] + counts['html']} page(s) saved; "
+              f"{len(browser_queue)} link(s) queued for the browser.", flush=True)
     else:
         browser_queue = [(t, make_stem(t, i)) for i, t in enumerate(targets, start=1)]
 

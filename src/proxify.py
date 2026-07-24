@@ -61,7 +61,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlsplit, urlunsplit, quote, parse_qsl, urlencode
 
-__version__ = "2026.07.23.4"
+__version__ = "2026.07.23.5"
 
 # Your institution's EZproxy host. Set it via the LIBPROXY_HOST environment
 # variable or the --proxy-host flag; the placeholder below is only a default.
