@@ -61,7 +61,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlsplit, urlunsplit, quote, parse_qsl, urlencode
 
-__version__ = "2026.07.23.3"
+__version__ = "2026.07.23.4"
 
 # Your institution's EZproxy host. Set it via the LIBPROXY_HOST environment
 # variable or the --proxy-host flag; the placeholder below is only a default.
@@ -295,15 +295,20 @@ def _clean_html_text(s: str) -> str:
 
 
 def _meta_content(text: str, key: str, attr: str = "name") -> str:
-    """Return the content of <meta {attr}="{key}" content="...">, either order."""
-    k = re.escape(key)
-    for pat in (
-        r'<meta[^>]+%s=["\']%s["\'][^>]*content=["\'](.*?)["\']' % (attr, k),
-        r'<meta[^>]+content=["\'](.*?)["\'][^>]*%s=["\']%s["\']' % (attr, k),
-    ):
-        m = re.search(pat, text, re.IGNORECASE | re.DOTALL)
-        if m:
-            return _clean_html_text(m.group(1))
+    """Return the content of <meta {attr}="{key}" content="..."> (attr order
+    doesn't matter). Scans each <meta> tag in isolation so it stays linear even
+    on huge minified pages (no cross-tag backtracking)."""
+    k = key.strip().lower()
+    attr_re = re.compile(r'\b%s\s*=\s*["\']([^"\']*)["\']' % re.escape(attr), re.IGNORECASE)
+    content_re = re.compile(r'\bcontent\s*=\s*(["\'])(.*?)\1', re.IGNORECASE | re.DOTALL)
+    for m in re.finditer(r'<meta\b[^>]*>', text, re.IGNORECASE):
+        tag = m.group(0)
+        am = attr_re.search(tag)
+        if not am or am.group(1).strip().lower() != k:
+            continue
+        cm = content_re.search(tag)
+        if cm:
+            return _clean_html_text(cm.group(2))
     return ""
 
 

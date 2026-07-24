@@ -428,7 +428,8 @@ def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
 
     curl_secs = max(1, curl_timeout_ms // 1000)    # page fetch: bail fast on a stall
     pdf_secs = max(1, pdf_timeout_ms // 1000)
-    curl_fetch = lambda u: (curl_bytes(u, cookies_path, pdf_secs)[0], "")
+    img_secs = max(1, min(pdf_secs, 10))           # companion image: short cap
+    curl_img = lambda u: (curl_bytes(u, cookies_path, img_secs)[0], "")
 
     # ---- Phase 1: curl-first (no browser) ----
     browser_queue = []                             # (t, stem)
@@ -465,16 +466,29 @@ def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
                 counts["pdf"] += 1
                 results.append((original, url, "pdf", dest))
                 print(f"        OK: PDF via curl -> {dest}", flush=True)
-            elif html and html_is_usable(html):
-                pp, ip = save_page(pagedir, stem, html, nav, original, nav, curl_fetch)
-                had = bool(abstract_text(html))
-                counts["abstract" if had else "html"] += 1
-                results.append((original, url, "abstract" if had else "html", pp))
-                print(f"        page via curl -> {pp}" + (" (+image)" if ip else ""), flush=True)
+            elif html:
+                vlog("        extracting abstract…")
+                ta = time.time()
+                abs_present = bool(abstract_text(html))
+                vlog(f"        abstract {'found' if abs_present else 'not found'} "
+                     f"({time.time() - ta:.1f}s)")
+                usable = abs_present or any(
+                    k in html for k in ("citation_pdf_url", "citation_title", "citation_doi"))
+                if usable:
+                    vlog(f"        saving page + companion image (img cap {img_secs}s)…")
+                    ts = time.time()
+                    pp, ip = save_page(pagedir, stem, html, nav, original, nav, curl_img)
+                    vlog(f"        saved in {time.time() - ts:.1f}s")
+                    counts["abstract" if abs_present else "html"] += 1
+                    results.append((original, url, "abstract" if abs_present else "html", pp))
+                    print(f"        page via curl -> {pp}" + (" (+image)" if ip else ""), flush=True)
+                else:
+                    browser_queue.append((t, stem))
+                    print("        page not usable (bot-wall/login) -> queued for browser",
+                          flush=True)
             else:
                 browser_queue.append((t, stem))
-                why = ("curl timed out" if rc == 28 else
-                       "empty response" if not data else "bot-wall/challenge stub")
+                why = "curl timed out" if rc == 28 else "empty response"
                 print(f"        {why} -> queued for browser", flush=True)
             if delay:
                 time.sleep(delay)
