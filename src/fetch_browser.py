@@ -196,21 +196,22 @@ def discover_pdf_url(html: str, page_url: str):
     publishers), then anchors whose href ends in .pdf or contains /pdf.
     Returns an absolute, proxy-routed URL or None.
     """
-    # 1) citation_pdf_url meta tag (either attribute order)
-    for pat in (
-        r'<meta[^>]+name=["\']citation_pdf_url["\'][^>]*content=["\'](.*?)["\']',
-        r'<meta[^>]+content=["\'](.*?)["\'][^>]*name=["\']citation_pdf_url["\']',
-    ):
-        m = re.search(pat, html, re.IGNORECASE | re.DOTALL)
-        if m and m.group(1).strip():
-            return _abs_and_proxied(m.group(1).strip(), page_url)
+    # 1) citation_pdf_url meta — locate the token, read content= from that one
+    #    tag only. (Token-anchored + bounded char classes = no catastrophic
+    #    backtracking on huge minified publisher pages.)
+    idx = html.find("citation_pdf_url")
+    if idx != -1:
+        start, end = html.rfind("<", 0, idx), html.find(">", idx)
+        if start != -1 and end != -1:
+            m = re.search(r'content=["\']([^"\']+)["\']', html[start:end + 1], re.IGNORECASE)
+            if m and m.group(1).strip():
+                return _abs_and_proxied(m.group(1).strip(), page_url)
 
-    # 2) anchors that look like a PDF
-    for m in re.finditer(r'<a[^>]+href=["\'](.*?)["\']', html, re.IGNORECASE | re.DOTALL):
-        href = m.group(1).strip()
-        low = href.lower()
+    # 2) any href that looks like a PDF (bounded [^"']+ — linear, safe)
+    for m in re.finditer(r'href=["\']([^"\']+)["\']', html):
+        low = m.group(1).lower()
         if low.endswith(".pdf") or "/pdf" in low or "pdfft" in low or "/epdf" in low:
-            return _abs_and_proxied(href, page_url)
+            return _abs_and_proxied(m.group(1).strip(), page_url)
 
     # 3) the page itself may already be a PDF endpoint
     if page_url.lower().endswith(".pdf") or "/pdf" in page_url.lower():
@@ -232,25 +233,25 @@ def discover_image_url(html: str, page_url: str):
     `og:image` meta, then `<link rel="image_src">`. Returns an absolute,
     proxy-routed URL or None.
     """
-    m = re.search(
-        r'<(figure|div)[^>]*(?:class|id)=["\'][^"\']*(?:graphical|abstract)[^"\']*["\']'
-        r'[^>]*>(.*?)</\1>', html, re.IGNORECASE | re.DOTALL)
-    if m:
-        im = re.search(r'<img[^>]+(?:data-src|src)=["\'](.*?)["\']',
-                       m.group(2), re.IGNORECASE | re.DOTALL)
+    low = html.lower()
+    # 1) graphical-abstract figure: find the token, grab the next <img> src in a
+    #    small window (token-anchored + bounded classes = no backtracking blowups).
+    gi = low.find("graphical")
+    if gi != -1:
+        im = re.search(r'<img[^>]+?(?:data-src|src)=["\']([^"\']+)["\']',
+                       html[gi:gi + 3000], re.IGNORECASE)
         if im and im.group(1).strip():
             return _abs_and_proxied(im.group(1).strip(), page_url)
-    for pat in (
-        r'<meta[^>]+property=["\']og:image["\'][^>]*content=["\'](.*?)["\']',
-        r'<meta[^>]+content=["\'](.*?)["\'][^>]*property=["\']og:image["\']',
-    ):
-        mm = re.search(pat, html, re.IGNORECASE | re.DOTALL)
-        if mm and mm.group(1).strip():
-            return _abs_and_proxied(mm.group(1).strip(), page_url)
-    mm = re.search(r'<link[^>]+rel=["\']image_src["\'][^>]*href=["\'](.*?)["\']',
-                   html, re.IGNORECASE | re.DOTALL)
-    if mm and mm.group(1).strip():
-        return _abs_and_proxied(mm.group(1).strip(), page_url)
+    # 2) og:image, then 3) <link rel="image_src"> — read from just that tag
+    for token, attr in (("og:image", "content"), ("image_src", "href")):
+        i = html.find(token)
+        if i != -1:
+            start, end = html.rfind("<", 0, i), html.find(">", i)
+            if start != -1 and end != -1:
+                m = re.search(attr + r'=["\']([^"\']+)["\']',
+                              html[start:end + 1], re.IGNORECASE)
+                if m and m.group(1).strip():
+                    return _abs_and_proxied(m.group(1).strip(), page_url)
     return None
 
 
@@ -445,6 +446,7 @@ def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
             body = data if data.startswith(b"%PDF") else None
             html = "" if body else data.decode("utf-8", "ignore")
             if not body and html:                  # page may link to a PDF curl can grab
+                vlog(f"        parsing {len(html)} bytes of HTML…")
                 pdf_url = discover_pdf_url(html, nav)
                 if pdf_url:
                     vlog(f"        found PDF link -> curl GET (up to {pdf_secs}s): {pdf_url[:100]}")

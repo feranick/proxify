@@ -61,7 +61,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlsplit, urlunsplit, quote, parse_qsl, urlencode
 
-__version__ = "2026.07.23.2"
+__version__ = "2026.07.23.3"
 
 # Your institution's EZproxy host. Set it via the LIBPROXY_HOST environment
 # variable or the --proxy-host flag; the placeholder below is only a default.
@@ -322,9 +322,11 @@ def extract_abstract_text(text: str, min_len: int = 40) -> str:
         if len(val) >= min_len:
             return val
 
-    # 2) JSON-LD abstract / description (handles arrays and @graph)
+    # 2) JSON-LD abstract / description (handles arrays and @graph).
+    #    Bounded capture (.{0,500000}?) keeps the regex linear on huge minified
+    #    publisher pages instead of backtracking catastrophically.
     for block in re.findall(
-            r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+            r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.{0,500000}?)</script>',
             text, re.IGNORECASE | re.DOTALL):
         try:
             data = json.loads(block.strip())
@@ -346,9 +348,10 @@ def extract_abstract_text(text: str, min_len: int = 40) -> str:
                         if len(val) >= min_len:
                             return val
 
-    # 3) an element whose class/id mentions "abstract"
+    # 3) an element whose class/id mentions "abstract" (bounded capture)
     m = re.search(
-        r'<(section|div|p)[^>]*(?:class|id)=["\'][^"\']*abstract[^"\']*["\'][^>]*>(.*?)</\1>',
+        r'<(section|div|p)[^>]{0,400}(?:class|id)=["\'][^"\']*abstract[^"\']*["\']'
+        r'[^>]{0,400}>(.{0,40000}?)</\1>',
         text, re.IGNORECASE | re.DOTALL)
     if m:
         val = _clean_html_text(m.group(2))
