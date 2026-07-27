@@ -25,6 +25,13 @@ Downloading:
     (default "downloads/"). Pass an exported browser cookie file with
     -c/--cookies (Netscape cookie.txt format) so curl authenticates as you.
 
+    When a link is NOT a PDF (a landing/viewer page), the extracted abstract +
+    metadata are saved as a clean <stem>.md in the abstract_failed/ folder,
+    rather than the raw (often JavaScript-shell) HTML page. This gives a unique,
+    useful artifact per paper -- important when the folder is later indexed by a
+    RAG tool, which would otherwise reject identical publisher boilerplate as
+    "duplicate content".
+
 --------------------------------------------------------------------------
 WHAT curl CAN AND CANNOT DO (important)
 --------------------------------------------------------------------------
@@ -50,6 +57,7 @@ others. It is attempted, and lands in the failed list if it is blocked.
 
 import argparse
 import csv
+import hashlib
 import html as _html
 import json
 import os
@@ -61,7 +69,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlsplit, urlunsplit, quote, parse_qsl, urlencode
 
-__version__ = "2026.07.23.5"
+__version__ = "2026.07.27.1"
 
 # Your institution's EZproxy host. Set it via the LIBPROXY_HOST environment
 # variable or the --proxy-host flag; the placeholder below is only a default.
@@ -383,6 +391,45 @@ def extract_abstract(html_path: str, min_len: int = 40) -> str:
     return extract_abstract_text(text, min_len)
 
 
+def write_page_markdown(pagedir, stem, html_text, *, title="", authors="",
+                        year="", doi="", url="", min_len=40):
+    """Save a clean <stem>.md holding the paper's metadata + extracted abstract,
+    instead of the raw (often JS-shell) landing page.
+
+    The metadata makes every file unique (no false 'duplicate content' when the
+    folder is indexed by a RAG tool), and the abstract is real text -- unlike the
+    identical boilerplate a shell page extracts to. Returns (md_path, had_abstract).
+    """
+    os.makedirs(pagedir, exist_ok=True)
+    abstract = extract_abstract_text(html_text or "", min_len) if html_text else ""
+    md_path = os.path.join(pagedir, stem + ".md")
+    lines = [f"# {title or stem}", ""]
+    meta = []
+    if authors:
+        meta.append(f"**Authors:** {authors}")
+    if year:
+        meta.append(f"**Year:** {year}")
+    if doi:
+        meta.append(f"**DOI / original:** {doi}")
+    if url:
+        meta.append(f"**Source URL:** {url}")
+    if meta:
+        lines += meta + [""]
+    # content-id guarantees two metadata-only stubs never collide on a
+    # content-hash dedup even if they somehow share the same text
+    cid = hashlib.md5((doi or url or stem).encode("utf-8", "replace")).hexdigest()
+    lines += [f"<!-- content-id: {cid} -->", ""]
+    if abstract:
+        lines += ["## Abstract", "", abstract, ""]
+    else:
+        lines += ["_No abstract could be extracted from the source page "
+                  "(likely a JavaScript-gated publisher). Fetch the PDF, or use "
+                  "fetch_browser.py, to obtain the full text._", ""]
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return md_path, bool(abstract)
+
+
 def make_filename(orig_url: str, index: int) -> str:
     """Derive a sensible .pdf filename from the ORIGINAL url."""
     parts = urlsplit(orig_url)
@@ -445,11 +492,11 @@ def download(records, outdir: str, cookies, pagedir: str):
     """records: list of dicts with keys orig, proxied, gated.
 
     Fetch each non-gated link with curl. Real PDFs land in `outdir`. When the
-    response is not a PDF (an HTML landing/viewer page), the whole page is saved
-    into `pagedir` as <stem>.html — a readable file that carries the abstract
-    plus whatever else the page shows. Gated links are skipped (curl cannot
-    retrieve them) and reported separately. Returns (failures, needs_browser),
-    each a list of (original_doi, filename, title, year, proxied_url, reason).
+    response is not a PDF (an HTML landing/viewer page), a clean <stem>.md with
+    the paper's metadata + extracted abstract is written into `pagedir` instead
+    of the raw shell page. Gated links are skipped (curl cannot retrieve them)
+    and reported separately. Returns (failures, needs_browser), each a list of
+    (original_doi, filename, title, year, proxied_url, reason).
     """
     if shutil.which("curl") is None:
         raise SystemExit("Error: curl not found on PATH.")
@@ -516,23 +563,29 @@ def download(records, outdir: str, cookies, pagedir: str):
                       f"— file is intact).")
         elif file_ok and not is_pdf(dest):
             notpdf += 1
-            # Not a PDF: keep the whole page as a readable .html in pagedir.
-            os.makedirs(pagedir, exist_ok=True)
-            page_dest = os.path.join(pagedir, stem + ".html")
+            # Not a PDF: save a CLEAN <stem>.md (metadata + extracted abstract)
+            # instead of the raw shell page — unique, useful content for RAG.
             try:
-                os.replace(dest, page_dest)
-                saved_as = page_dest
+                with open(dest, "rb") as fh:
+                    html_text = fh.read().decode("utf-8", "ignore")
             except OSError:
-                saved_as = dest
-            has_abs = bool(extract_abstract(saved_as))
+                html_text = ""
+            md_path, has_abs = write_page_markdown(
+                pagedir, stem, html_text,
+                title=title, authors=rec.get("authors", ""), year=year,
+                doi=orig, url=proxied)
+            try:
+                os.remove(dest)          # drop the raw HTML shell
+            except OSError:
+                pass
             if has_abs:
                 withabs += 1
-            abs_note = "with abstract" if has_abs else "no abstract detected"
+            abs_note = "abstract extracted" if has_abs else "metadata only (no abstract)"
             failures.append((orig, stem, title, year, proxied,
-                             f"not-a-PDF (HTML page saved; {abs_note})"))
+                             f"not-a-PDF (.md saved; {abs_note})"))
             note = "" if rc == 0 else f" (curl exit {rc})"
-            print(f"        WARNING: not a PDF{note} — page saved to "
-                  f"{pagedir}/{os.path.basename(saved_as)} ({abs_note}).")
+            print(f"        WARNING: not a PDF{note} — saved to "
+                  f"{pagedir}/{os.path.basename(md_path)} ({abs_note}).")
         else:
             fail += 1
             failures.append((orig, stem, title, year, proxied, f"download failed (curl exit {rc})"))
@@ -546,7 +599,7 @@ def download(records, outdir: str, cookies, pagedir: str):
     print(f"\nSummary: {ok + ok_warn} PDF(s) saved"
           + (f" ({ok_warn} completed despite a curl warning)" if ok_warn else "")
           + f" into {outdir}/"
-          + f"; {notpdf} HTML page(s) into {pagedir}/"
+          + f"; {notpdf} abstract/metadata .md file(s) into {pagedir}/"
           + (f" ({withabs} with an abstract)" if withabs else "")
           + f"; {fail} failed"
           + (f"; {len(needs_browser)} skipped (need browser)" if needs_browser else "")
@@ -655,8 +708,8 @@ def main() -> None:
     ap.add_argument("-o", "--outdir", default=None,
                     help="directory for real PDFs only (default: <outroot>/downloads)")
     ap.add_argument("--pagedir", "--abstractdir", default=None, dest="pagedir",
-                    help="directory for saved HTML pages when no PDF is available "
-                         "(default: <outroot>/abstract_failed)")
+                    help="directory for saved abstract/metadata .md files when no PDF "
+                         "is available (default: <outroot>/abstract_failed)")
     ap.add_argument("-c", "--cookies", default=None,
                     help="Netscape cookie.txt file for proxy authentication (used with -d)")
     ap.add_argument("-g", "--pdf-guess", action="store_true",

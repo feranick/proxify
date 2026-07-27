@@ -4,15 +4,16 @@ Headless-browser companion to proxify.py for the JS/bot-gated publishers.
 
 proxify.py lists the JS/bot-gated links (Elsevier ScienceDirect, Wiley, SSRN,
 ResearchGate, etc.) in needs_browser.csv. THIS script picks that file up and
-gets the PDF, or failing that the full readable HTML page.
+gets the PDF, or failing that a clean <stem>.md with the paper's metadata and
+extracted abstract (plus its companion graphical-abstract image).
 
 Curl-first: each link is tried with curl first (fast, no browser); only links
 that curl can't crack fall back to a real Chromium via Playwright (reusing your
 cookies). If every link is handled by curl, the browser never launches.
 
     downloads/         real PDFs (verified %PDF magic bytes)
-    abstract_failed/   when no PDF: the full HTML page as <stem>.html, plus its
-                       companion graphical-abstract image as <stem>.<img>
+    abstract_failed/   when no PDF: a clean <stem>.md (metadata + abstract),
+                       plus its companion graphical-abstract image as <stem>.<img>
 
 --------------------------------------------------------------------------
 SETUP (one time; only needed if any link falls back to the browser):
@@ -377,17 +378,20 @@ def html_is_usable(html: str) -> bool:
 
 
 def save_page(pagedir: str, stem: str, html: str, page_url: str,
-              original: str, src_url: str, fetch_bytes):
-    """Save the full HTML page as <stem>.html in pagedir (a readable file with
-    the abstract plus whatever else the page shows), and the companion
-    graphical-abstract image as <stem>.<ext> if one is found. `fetch_bytes(url)`
-    returns (bytes, content_type). Returns (page_path, image_path_or_None)."""
+              original: str, src_url: str, fetch_bytes, title="", year=""):
+    """Save a clean <stem>.md (metadata + extracted abstract) instead of the raw
+    shell HTML, plus the companion graphical-abstract image as <stem>.<ext> if
+    one is found. Returns (md_path, image_path_or_None)."""
     os.makedirs(pagedir, exist_ok=True)
-    page_path = os.path.join(pagedir, stem + ".html")
-    header = (f"<!-- saved by fetch_browser: DOI/original={original}; "
-              f"source={src_url} -->\n")
-    with open(page_path, "w", encoding="utf-8") as f:
-        f.write(header + (html or ""))
+    writer = getattr(pm, "write_page_markdown", None)
+    if writer is not None:
+        page_path, _ = writer(pagedir, stem, html or "",
+                              title=title, year=year, doi=original, url=src_url)
+    else:  # fallback for an older proxify.py without the helper
+        page_path = os.path.join(pagedir, stem + ".html")
+        with open(page_path, "w", encoding="utf-8") as f:
+            f.write(f"<!-- saved by fetch_browser: original={original}; "
+                    f"source={src_url} -->\n" + (html or ""))
     img_path = None
     img_url = discover_image_url(html or "", page_url)
     if img_url:
@@ -477,7 +481,8 @@ def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
                 if usable:
                     vlog(f"        saving page + companion image (img cap {img_secs}s)…")
                     ts = time.time()
-                    pp, ip = save_page(pagedir, stem, html, nav, original, nav, curl_img)
+                    pp, ip = save_page(pagedir, stem, html, nav, original, nav,
+                                       curl_img, t.get("title", ""), t.get("year", ""))
                     vlog(f"        saved in {time.time() - ts:.1f}s")
                     counts["abstract" if abs_present else "html"] += 1
                     results.append((original, url, "abstract" if abs_present else "html", pp))
@@ -628,7 +633,8 @@ def _run_browser(queue, cookies_path, outdir, pagedir, headful, delay, timeout_m
                     results.append((original, url, "pdf", dest))
                     print(f"        OK: PDF saved -> {dest}", flush=True)
                 else:
-                    pp, ip = save_page(pagedir, stem, html, page.url, original, src, br_fetch)
+                    pp, ip = save_page(pagedir, stem, html, page.url, original, src,
+                                       br_fetch, t.get("title", ""), t.get("year", ""))
                     had = bool(abstract_text(html))
                     counts["abstract" if had else "html"] += 1
                     results.append((original, url, "abstract" if had else "html", pp))
@@ -662,7 +668,7 @@ def main():
                          "input name without extension.")
     ap.add_argument("-o", "--outdir", default=None, help="PDF output dir (default: <outroot>/downloads)")
     ap.add_argument("--pagedir", "--abstractdir", default=None, dest="pagedir",
-                    help="saved-HTML-page dir when no PDF (default: <outroot>/abstract_failed)")
+                    help="saved-page dir when no PDF (default: <outroot>/abstract_failed)")
     ap.add_argument("--no-curl-first", dest="curl_first", action="store_false",
                     help="skip the curl pass; use the browser for every link")
     ap.add_argument("--pdf-timeout", type=int, default=15000,
