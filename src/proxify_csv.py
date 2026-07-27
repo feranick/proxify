@@ -22,7 +22,8 @@ Expected CSV columns (header row; extras are ignored, missing ones tolerated):
     unpaywall_is_oa, oa_status, pdf_url, landing_url, ..., doi_url, access_class
 
 All the heavy lifting (proxying, PDF-guessing, curl download, abstract
-extraction, JS-gated routing) is shared with proxify.py — this file only
+extraction, JS-gated routing, and saving a clean <stem>.md with metadata +
+abstract when there's no PDF) is shared with proxify.py — this file only
 adds the CSV front-end. For a plain .txt list of URLs/DOIs, use proxify.py.
 
 Usage:
@@ -107,7 +108,9 @@ def build_records(items, args, resolved):
             it.get("authors", ""), it["title"], it["year"]) or None
         records.append({
             "orig": it["id"], "proxied": url, "gated": gated,
-            "title": it["title"], "year": it["year"], "name": name,
+            "title": it["title"], "year": it["year"],
+            "authors": it.get("authors", ""),   # carried into the saved .md metadata
+            "name": name,
         })
     return records
 
@@ -128,7 +131,8 @@ def main():
     ap.add_argument("-d", "--download", action="store_true", help="download with curl")
     ap.add_argument("-o", "--outdir", default=None, help="PDF dir (default: <outroot>/downloads)")
     ap.add_argument("--pagedir", "--abstractdir", default=None, dest="pagedir",
-                    help="saved-HTML-page dir when no PDF (default: <outroot>/abstract_failed)")
+                    help="dir for saved abstract/metadata .md files when no PDF "
+                         "(default: <outroot>/abstract_failed)")
     ap.add_argument("-c", "--cookies", default=None,
                     help="Netscape cookies.txt for proxy authentication")
     ap.add_argument("-g", "--pdf-guess", action="store_true",
