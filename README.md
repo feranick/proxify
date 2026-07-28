@@ -1,6 +1,6 @@
 # Library-proxy PDF toolkit
 
-Version **2026.07.23.1** — check with `python3 proxify.py --version` (also
+Version **2026.07.27.3** — check with `python3 proxify.py --version` (also
 `proxify_csv.py --version`, `fetch_browser.py --version`).
 
 Fetch paper PDFs through a library proxy (**EZproxy**) using your authenticated session
@@ -19,9 +19,9 @@ All output for a given input goes into **one folder named after that input**
 ```
 access_all_papers/
   downloads/          real PDFs (named <Surname>_<Title>_<Year>.pdf)
-  abstract_failed/    when no PDF: the full HTML page (readable, carries the
-                      abstract + more) as <stem>.html, plus its companion
-                      graphical-abstract image as <stem>.<img>
+  abstract_failed/    when no PDF: a clean <stem>.md with the paper's metadata
+                      (title/authors/year/DOI) + its extracted abstract, plus a
+                      companion graphical-abstract image as <stem>.<img>
   proxied.txt         the rewritten URL list
   failed.csv          links that didn't yield a PDF
   needs_browser.csv   JS/bot-gated links for the browser step
@@ -29,10 +29,97 @@ access_all_papers/
 
 The three scripts share this layout, so you can chain them: pick `proxify.py`
 **or** `proxify_csv.py` for your input, then run `fetch_browser.py` on the
-`needs_browser.csv` inside that folder — its PDFs land in the same `downloads/`.
+report CSVs inside that folder — its PDFs land in the same `downloads/`.
 Override the parent folder with `--outroot`. See
 [proxify_csv.py](#csv-input-proxify_csvpy) and
 [Fetching gated PDFs with a browser](#fetching-gated-pdfs-with-a-browser-fetch_browserpy).
+
+---
+
+# Complete workflow (build a paper library from scratch)
+
+The steps below are the full recommended run, in order. Details for each stage
+are in the sections that follow. Steps 2 and 3 can each take hours for a large
+list — run them under `tmux`/`screen` so a dropped SSH session doesn't kill them.
+
+### 1. Set the proxy host and get fresh cookies
+
+Cookies expire; a stale jar silently returns login pages instead of PDFs.
+
+```bash
+export LIBPROXY_HOST=libproxy.your-university.edu
+# re-export cookies.txt from your logged-in browser now (see Authentication)
+```
+
+### 2. Extract — proxify
+
+Use whichever matches your input (CSV is faster; see
+[Why it's faster](#why-its-faster)):
+
+```bash
+python3 proxify_csv.py access_all_papers.csv -r -g -j 40 -d -c cookies.txt   # metadata CSV
+python3 proxify.py     urls.txt              -r -g -j 40 -d -c cookies.txt   # URL/DOI list
+```
+
+Produces `downloads/` (PDFs), `abstract_failed/` (`.md` records), and the report
+CSVs `failed.csv` / `needs_browser.csv`.
+
+### 3. Browser pass — recover what curl couldn't
+
+**Do not skip this.** `curl` cannot render JavaScript, so most publisher landing
+pages come back as shells with no abstract — without this step a large fraction
+of your library will be metadata-only stubs. Feed it **both** report CSVs
+(`failed.csv` holds the ordinary not-a-PDF rows; the folder shorthand only picks
+up `needs_browser.csv`):
+
+```bash
+OUT=access_all_papers
+# small headful test first — clears any one-time CAPTCHA, lets you check results
+python3 fetch_browser.py $OUT/failed.csv -c cookies.txt --headful --limit 5
+
+python3 fetch_browser.py $OUT/failed.csv        -c cookies.txt
+python3 fetch_browser.py $OUT/needs_browser.csv -c cookies.txt
+```
+
+Output converges into the same `downloads/` and `abstract_failed/`. Verify the
+test batch before the full run: PDFs in `downloads/`, or `.md` files that now
+contain a real `## Abstract` section.
+
+### 4. Consolidate into one folder
+
+```bash
+OUT=~/path/to/access_all_papers
+LIB=~/literature/flash                 # the folder your RAG sync watches
+rm -rf "$LIB" && mkdir -p "$LIB"
+cp "$OUT"/downloads/*       "$LIB"/ 2>/dev/null
+cp "$OUT"/abstract_failed/* "$LIB"/ 2>/dev/null
+```
+
+Then drop metadata-only stubs for papers whose PDF you now have — they add noise
+without content:
+
+```bash
+cd "$LIB"
+for f in *.md; do b="${f%.md}"; [ -f "$b.pdf" ] && \
+  grep -qi "no abstract could be extracted" "$f" && rm "$f"; done
+```
+
+### 5. Check coverage before indexing
+
+```bash
+python3 library_stats.py "$LIB"          # add --list to name the gaps
+```
+
+This is the quality gate: it reports how many papers you have the **full PDF**
+for versus **abstract only** versus **metadata only**, and flags PDFs with no
+extractable text (scanned — they need OCR). If metadata-only dominates, step 3
+didn't do its job; fix that before indexing, because it caps what any RAG system
+built on this library can answer.
+
+### 6. Index it
+
+Feed `$LIB` to your RAG tool. For the companion `sync_folder.py`, see its own
+README (wipe the collection, clear the sync state, then sync).
 
 ---
 
@@ -52,7 +139,7 @@ sub-folders:
 | Sub-folder | Contents |
 |--------|----------|
 | `downloads/` | Real PDFs only (verified by the `%PDF` magic bytes) |
-| `abstract_failed/` | When no PDF is available, the **full HTML page** saved as `<stem>.html` (a readable file with the abstract plus whatever else the page shows) |
+| `abstract_failed/` | When no PDF is available, a clean **`<stem>.md`** holding the paper's metadata (title, authors, year, DOI, source URL) and its extracted abstract |
 
 ## Requirements
 
@@ -130,7 +217,7 @@ https://libproxy.example.edu/login?url=https%3A%2F%2Fpubs.acs.org%2Fdoi%2F10.102
 | `-d`, `--download` | Download each proxied link with `curl` |
 | `--outroot` | Parent folder for all output (default: input filename without extension) |
 | `-o`, `--outdir` | Folder for **real PDFs only** (default: `<outroot>/downloads`) |
-| `--pagedir` (alias `--abstractdir`) | Folder for the full HTML page saved when no PDF is available (default: `<outroot>/abstract_failed`) |
+| `--pagedir` (alias `--abstractdir`) | Folder for the abstract/metadata `.md` saved when no PDF is available (default: `<outroot>/abstract_failed`) |
 | `-c`, `--cookies` | Netscape `cookies.txt` file for proxy authentication (with `-d`) |
 | `-g`, `--pdf-guess` | Rewrite known landing/viewer URLs to direct-PDF URLs before proxying |
 | `-f`, `--failfile` | CSV for links that didn't yield a PDF (default: `<outroot>/failed.csv`) |
@@ -193,18 +280,31 @@ what actually landed on disk after every download and classifies each link as:
   `curl` also returned an error (e.g. exit 56), it's still counted as saved,
   with a note explaining the file is intact.
 - **non-PDF page** — file exists but isn't a PDF (usually an HTML
-  landing/viewer page). The **whole page** is saved into `abstract_failed/` as
-  `<stem>.html` — a readable file that carries the abstract plus whatever else
-  the page shows.
+  landing/viewer page). The abstract is extracted and saved into
+  `abstract_failed/` as a clean **`<stem>.md`** with the paper's metadata; the
+  raw page is discarded.
 - **failed** — nothing usable was downloaded; any empty stub file is removed.
 
 The run ends with a summary line, e.g.
-`Summary: 3 PDF(s) saved into downloads/; 43 HTML page(s) into abstract_failed/ (30 with an abstract); 14 failed; ...`
+`Summary: 3 PDF(s) saved into downloads/; 43 abstract/metadata .md file(s) into abstract_failed/ (30 with an abstract); 14 failed; ...`
 
-An abstract is still detected (via `citation_abstract` / `dc.description` meta →
-JSON-LD `abstract`/`description` → an element whose class/id contains `abstract`
-→ `og:description`) purely to label the outcome and counts; the saved artifact is
-the full page, not a stripped snippet.
+The abstract is found via `citation_abstract` / `dc.description` meta → JSON-LD
+`abstract`/`description` → an element whose class/id contains `abstract` →
+`og:description`.
+
+### Why `.md` and not the raw page
+
+Saved publisher pages are frequently JavaScript shells: the article text is
+loaded by scripts and is simply **not in the file**. Such pages all extract to
+the same generic boilerplate, which is useless for search and — because the text
+is identical across papers — gets rejected as *duplicate content* by tools that
+index the folder. Writing the extracted abstract plus per-paper metadata instead
+gives one unique, genuinely useful record per paper.
+
+When no abstract can be found, the `.md` still contains the metadata (and says
+so). Those are the papers worth chasing with
+[`fetch_browser.py`](#fetching-gated-pdfs-with-a-browser-fetch_browserpy), which
+renders the JavaScript and can usually retrieve the real abstract or the PDF.
 
 ### Failed-links file (CSV)
 
@@ -216,7 +316,7 @@ would use, so `fetch_browser.py` names its downloads identically:
 
 ```csv
 original_doi,filename,title,year,proxied_url,reason
-10.1111/jace.15314,Sortino_Continuous_flash_sintering_2017,Continuous flash sintering,2017,https://ceramics-onlinelibrary-wiley-com.libproxy.example.edu/doi/pdf/10.1111/jace.15314,not-a-PDF (HTML page saved; with abstract)
+10.1111/jace.15314,Sortino_Continuous_flash_sintering_2017,Continuous flash sintering,2017,https://ceramics-onlinelibrary-wiley-com.libproxy.example.edu/doi/pdf/10.1111/jace.15314,not-a-PDF (.md saved; abstract extracted)
 10.2139/ssrn.3630430,Doe_Some_working_paper_2023,Some working paper,2023,https://www-ssrn-com.libproxy.example.edu/abstract=3630430,download failed (curl exit 22)
 ```
 
@@ -432,18 +532,28 @@ consistent across all of them.
 # Fetching gated PDFs with a browser (`fetch_browser.py`)
 
 `proxify.py` lists the JS/bot-gated links (Elsevier ScienceDirect, Wiley, SSRN,
-ResearchGate, …) in `<outroot>/needs_browser.csv`. `fetch_browser.py` picks that
-file up and gets the PDF — or, failing that, the full readable HTML page.
+ResearchGate, …) in `<outroot>/needs_browser.csv`, and every other link that
+didn't yield a PDF in `<outroot>/failed.csv`. `fetch_browser.py` takes either
+file and gets the PDF — or, failing that, a real abstract.
 
-**Curl-first (default).** For each link it tries `curl` first (fast, no browser)
-and only falls back to Chromium/Playwright when curl is blocked or returns a
-bot-wall stub. If every link is handled by curl, the browser never launches. Use
-`--no-curl-first` to force the browser for all links.
+**Feed it both report CSVs.** The folder shorthand
+(`fetch_browser.py access_all_papers`) resolves to `needs_browser.csv` *only*.
+The bulk of recoverable papers are usually in `failed.csv` — ordinary publishers
+whose landing page curl could fetch but which rendered as a JavaScript shell — so
+pass that file explicitly as well. Skipping it is the single most common reason a
+library ends up full of metadata-only records.
+
+**Curl-first (default).** Each link is tried with `curl` first (fast, no browser).
+The curl result is **only accepted if it actually yields a PDF or a real
+abstract**; a page carrying just `citation_title`/`citation_doi` metadata is
+treated as a shell and handed to Chromium/Playwright, which renders the
+JavaScript and can reach the article text. If every link is satisfied by curl,
+the browser never launches. `--no-curl-first` forces the browser for all links.
 
 **Papers come first.** For each link (curl or browser) it locates the PDF via
 the `citation_pdf_url` meta tag that most publishers emit, then PDF anchors, and
 downloads the actual PDF into `downloads/`. Only when no PDF is obtainable does
-it save the **full HTML page** as `<stem>.html` in `abstract_failed/` — the same
+it write the abstract/metadata **`<stem>.md`** into `abstract_failed/` — the same
 folders as the main script, so output converges. Run both from the same
 directory.
 
@@ -509,12 +619,18 @@ python3 fetch_browser.py access_all_papers.csv          -c cookies.txt   # the o
 python3 fetch_browser.py access_all_papers/needs_browser.csv -c cookies.txt   # the file
 ```
 
+⚠️ All three forms above process **`needs_browser.csv` only**. To also recover
+the ordinary not-a-PDF links, pass `failed.csv` explicitly.
+
 Recommended flow — a small headful test first to clear any one-time CAPTCHA,
-then the whole list:
+then both lists in full:
 
 ```bash
-python3 fetch_browser.py access_all_papers -c cookies.txt --headful --limit 3
-python3 fetch_browser.py access_all_papers -c cookies.txt
+OUT=access_all_papers
+python3 fetch_browser.py $OUT/failed.csv -c cookies.txt --headful --limit 5
+
+python3 fetch_browser.py $OUT/failed.csv        -c cookies.txt
+python3 fetch_browser.py $OUT/needs_browser.csv -c cookies.txt
 ```
 
 Input may also be a plain text file with one URL per line. Output lands in the
@@ -529,7 +645,7 @@ same `access_all_papers/` folder, and a results CSV
 | `infile` | The `needs_browser.csv`, its output folder, the original input name, or a plain URL list |
 | `-c`, `--cookies` | Netscape `cookies.txt` for the proxy session |
 | `-o`, `--outdir` | PDF output dir (default: `<outroot>/downloads`) |
-| `--pagedir` (alias `--abstractdir`) | Saved HTML page dir when no PDF (default: `<outroot>/abstract_failed`) |
+| `--pagedir` (alias `--abstractdir`) | Dir for the abstract/metadata `.md` when no PDF (default: `<outroot>/abstract_failed`) |
 | `--no-curl-first` | Skip the curl pass; use the browser for every link |
 | `--curl-timeout` | ms cap on each curl page fetch (default: 20000); a stalled page bails to the browser |
 | `--pdf-timeout` | ms cap on each PDF-endpoint fetch (default: 15000) so a stalled publisher can't wedge the run |
