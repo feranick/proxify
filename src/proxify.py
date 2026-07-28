@@ -69,7 +69,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlsplit, urlunsplit, quote, parse_qsl, urlencode
 
-__version__ = "2026.07.27.1"
+__version__ = "2026.07.27.2"
 
 # Your institution's EZproxy host. Set it via the LIBPROXY_HOST environment
 # variable or the --proxy-host flag; the placeholder below is only a default.
@@ -415,16 +415,27 @@ def write_page_markdown(pagedir, stem, html_text, *, title="", authors="",
         meta.append(f"**Source URL:** {url}")
     if meta:
         lines += meta + [""]
-    # content-id guarantees two metadata-only stubs never collide on a
-    # content-hash dedup even if they somehow share the same text
+    # content-id (kept as a stable marker; some markdown loaders strip comments)
     cid = hashlib.md5((doi or url or stem).encode("utf-8", "replace")).hexdigest()
     lines += [f"<!-- content-id: {cid} -->", ""]
+    # A unique identifying sentence in the BODY prose (not just headings/meta):
+    # some RAG loaders dedupe on the body text only, so without this every
+    # "no abstract" stub would share an identical body and be wrongly flagged
+    # as 'duplicate content'. Embedding the title + DOI keeps every body unique.
+    ident = f'Record for "{title or stem}"'
+    if authors:
+        ident += f" by {authors}"
+    if year:
+        ident += f" ({year})"
+    if doi:
+        ident += f", DOI {doi}"
+    ident += "."
     if abstract:
-        lines += ["## Abstract", "", abstract, ""]
+        lines += ["## Abstract", "", abstract, "", ident, ""]
     else:
-        lines += ["_No abstract could be extracted from the source page "
-                  "(likely a JavaScript-gated publisher). Fetch the PDF, or use "
-                  "fetch_browser.py, to obtain the full text._", ""]
+        lines += [f"{ident} No abstract could be extracted from the source page "
+                  "(likely a JavaScript-gated publisher); fetch the PDF, or use "
+                  "fetch_browser.py, to obtain the full text.", ""]
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     return md_path, bool(abstract)
