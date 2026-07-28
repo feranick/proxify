@@ -377,6 +377,22 @@ def html_is_usable(html: str) -> bool:
     return any(k in html for k in ("citation_pdf_url", "citation_title", "citation_doi"))
 
 
+def curl_result_is_good_enough(html: str) -> bool:
+    """Whether to ACCEPT the curl-fetched page instead of retrying in a browser.
+
+    Only an actual abstract counts. Publisher shells routinely carry
+    citation_title / citation_doi meta with no article text, so accepting on
+    metadata alone would save a metadata-only stub and never try the browser —
+    exactly the pages the browser exists to rescue. A `citation_pdf_url` is also
+    accepted, since the caller can still pull the PDF from it.
+    """
+    if not html:
+        return False
+    if abstract_text(html):
+        return True
+    return "citation_pdf_url" in html
+
+
 def save_page(pagedir: str, stem: str, html: str, page_url: str,
               original: str, src_url: str, fetch_bytes, title="", year=""):
     """Save a clean <stem>.md (metadata + extracted abstract) instead of the raw
@@ -476,8 +492,10 @@ def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
                 abs_present = bool(abstract_text(html))
                 vlog(f"        abstract {'found' if abs_present else 'not found'} "
                      f"({time.time() - ta:.1f}s)")
-                usable = abs_present or any(
-                    k in html for k in ("citation_pdf_url", "citation_title", "citation_doi"))
+                # Accept the curl page only if it actually carries an abstract
+                # (or a PDF link). Metadata-only shells go to the browser, which
+                # renders the JS and can reach the real article text.
+                usable = curl_result_is_good_enough(html)
                 if usable:
                     vlog(f"        saving page + companion image (img cap {img_secs}s)…")
                     ts = time.time()
@@ -489,8 +507,8 @@ def run(targets, cookies_path, outdir, pagedir, headful, delay, timeout_ms,
                     print(f"        page via curl -> {pp}" + (" (+image)" if ip else ""), flush=True)
                 else:
                     browser_queue.append((t, stem))
-                    print("        page not usable (bot-wall/login) -> queued for browser",
-                          flush=True)
+                    print("        no abstract/PDF in the curl page (shell or bot-wall) "
+                          "-> queued for browser", flush=True)
             else:
                 browser_queue.append((t, stem))
                 why = "curl timed out" if rc == 28 else "empty response"
