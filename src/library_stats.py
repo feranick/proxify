@@ -8,14 +8,16 @@ one paper) and reports what you actually have.
 
 Usage:
     python3 library_stats.py ~/literature/flash
-    python3 library_stats.py ~/literature/flash --list        # name the gaps
-    python3 library_stats.py ~/literature/flash --csv out.csv # per-paper table
+    python3 library_stats.py ~/literature/flash --list                  # name the gaps
+    python3 library_stats.py ~/literature/flash --csv out.csv           # per-paper table
+    python3 library_stats.py ~/literature/flash --list-ignored          # show skipped files
+    python3 library_stats.py ~/literature/flash --save-ignored skip.txt # save that list
 
 Optional: `pip install pymupdf` lets it also flag PDFs with no extractable text
 (scanned / image-only), which are the ones that need OCR.
 """
 
-__version__ = "2026.07.31.1"
+__version__ = "2026.07.31.2"
 
 import csv
 import sys
@@ -23,7 +25,9 @@ import pathlib
 import collections
 
 PDF_EXT = {".pdf"}
-DOC_EXT = {".md", ".html", ".htm", ".txt", ".docx", ".doc", ".epub", ".rtf", ".pptx", ".csv"}
+DOC_EXT = {".md", ".html", ".htm", ".txt", ".rst", ".rtf", ".epub",
+           ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls",
+           ".odt", ".odp", ".ods", ".csv", ".tsv", ".json"}
 IMG_EXT = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp", ".gif", ".svg"}
 
 # marker written by proxify when it could not extract an abstract
@@ -76,19 +80,28 @@ def md_kind(p):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    def opt_value(flag):
+        """Value following a flag, or None."""
+        if flag in sys.argv:
+            i = sys.argv.index(flag)
+            if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("-"):
+                return sys.argv[i + 1]
+        return None
+
+    csv_out = opt_value("--csv")
+    save_ignored = opt_value("--save-ignored")
+    show_ignored = "--list-ignored" in sys.argv
     show_list = "--list" in sys.argv
-    csv_out = None
-    if "--csv" in sys.argv:
-        i = sys.argv.index("--csv")
-        if i + 1 < len(sys.argv):
-            csv_out = sys.argv[i + 1]
+    # positional args, minus any values consumed by the options above
+    consumed = {v for v in (csv_out, save_ignored) if v}
+    args = [a for a in sys.argv[1:] if not a.startswith("-") and a not in consumed]
     root = pathlib.Path(args[0] if args else ".").expanduser()
     if not root.is_dir():
         sys.exit(f"not a folder: {root}")
 
     papers = collections.defaultdict(lambda: {"pdf": [], "doc": [], "img": [], "bytes": 0})
     counts = collections.Counter()
+    ignored = []                 # files whose extension isn't indexed at all
     total_bytes = 0
 
     for p in sorted(root.rglob("*")):
@@ -112,6 +125,7 @@ def main():
             rec["doc"].append(p); counts["doc_files"] += 1
         else:
             counts["other_files"] += 1
+            ignored.append(p)
 
     # classify each paper
     full, abs_only, meta_only, img_only = [], [], [], []
@@ -155,7 +169,11 @@ def main():
     print(f"      .md metadata-only        : {md_meta:5d}")
     print(f"  images                       : {counts['image_files']:5d} file(s)")
     if counts["other_files"]:
-        print(f"  other/ignored                : {counts['other_files']:5d} file(s)")
+        by_ext = collections.Counter((p.suffix.lower() or "(no extension)") for p in ignored)
+        exts = ", ".join(f"{e}×{c}" for e, c in by_ext.most_common(8))
+        print(f"  other/ignored                : {counts['other_files']:5d} file(s)   [{exts}]")
+        if not (show_ignored or save_ignored):
+            print("      (--list-ignored to name them, --save-ignored FILE to write the list)")
     print()
     print("  coverage per paper:")
     print(f"      have the full PDF        : {len(full):5d}  ({len(full)/n*100:.0f}%)")
@@ -179,6 +197,19 @@ def main():
                 print(f"\n--- {label}: {len(group)} ---")
                 for s in sorted(group):
                     print(f"  {s}")
+
+    if show_ignored and ignored:
+        print(f"\n--- IGNORED (not indexed by sync_folder.py): {len(ignored)} ---")
+        for p in sorted(ignored):
+            print(f"  {p.relative_to(root)}")
+
+    if save_ignored:
+        with open(save_ignored, "w", encoding="utf-8") as fh:
+            fh.write(f"# files in {root} NOT indexed by sync_folder.py\n")
+            fh.write(f"# {len(ignored)} file(s); paths are relative to that folder\n")
+            for p in sorted(ignored):
+                fh.write(f"{p.relative_to(root)}\n")
+        print(f"\nwrote {len(ignored)} ignored path(s) to {save_ignored}")
 
     if csv_out:
         with open(csv_out, "w", newline="", encoding="utf-8") as fh:
